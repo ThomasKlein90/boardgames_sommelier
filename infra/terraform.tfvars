@@ -1,0 +1,6 @@
+airflow_server_name = "BoardGamesSommelierAirflowServer"
+project = "boardgames_sommelier"
+ec2_key_name = "value"
+raw_bucket = "RAW_BUCKET"
+staged_bucket = "STAGED_BUCKET"
+logs_bucket = "CLOUDWATCH_LOGS_BUCKET"
