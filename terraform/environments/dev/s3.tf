@@ -71,6 +71,17 @@ resource "aws_s3_bucket" "scripts" {
     })
 }   
 
+resource "aws_s3_bucket" "athena_results" {
+  bucket = "${local.project_name}-athena-results${local.environment}-${data.aws_caller_identity.current.account_id}"
+
+  tags = merge(
+    local.common_tags,
+    {
+      Purpose = "Athena query results"
+    }
+  )
+}
+
 # Get current AWS account ID
 data "aws_caller_identity" "current" {}
 
@@ -150,6 +161,17 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "scripts" {
   }
 }
 
+resource "aws_s3_bucket_server_side_encryption_configuration" "athena_results" {
+  bucket = aws_s3_bucket.athena_results.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+
 # Block public access for all buckets - essential security best practice
 resource "aws_s3_bucket_public_access_block" "raw_data" {
   bucket = aws_s3_bucket.raw_data.id
@@ -189,6 +211,15 @@ resource "aws_s3_bucket_public_access_block" "logs" {
 
 resource "aws_s3_bucket_public_access_block" "scripts" {
   bucket = aws_s3_bucket.scripts.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_public_access_block" "athena_results" {
+  bucket = aws_s3_bucket.athena_results.id
 
   block_public_acls       = true
   block_public_policy     = true
