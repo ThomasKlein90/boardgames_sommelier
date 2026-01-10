@@ -27,5 +27,10 @@ variable "my_ip" {
   description = "Your IP address for SSH access (CIDR notation)"
   type        = string
   # We'll set this when running terraform
+}
 
+variable "bgg_bearer_token" {
+  description = "BGG API Bearer Token"
+  type        = string
+  # defined in terraform.tfvars
 }
