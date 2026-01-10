@@ -34,3 +34,9 @@ variable "bgg_bearer_token" {
   type        = string
   # defined in terraform.tfvars
 }
+
+variable "alert_email" {
+  description = "Email address for pipeline alerts"
+  type        = string
+  # defined in terraform.tfvars
+}
