@@ -83,7 +83,7 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public.id
 }
 
-# Security group fro EC2 instance
+# Security group from EC2 instance
 resource "aws_security_group" "airflow_instance" {
   name        = "${var.project_name}-airflow-sg"
   description = "Allow SSH and HTTP access"
@@ -124,7 +124,7 @@ resource "aws_security_group" "airflow_instance" {
 # Create SSH key pair
 resource "aws_key_pair" "airflow" {
   key_name   = "${var.project_name}-key"
-  public_key = file("~/.ssh/id_rsa.pub") #Make sure you have an SSH key generated
+  public_key = file("~/.ssh/id_rsa.pub") # Make sure you have an SSH key generated
 }
 
 # EC2 instance for Airflow

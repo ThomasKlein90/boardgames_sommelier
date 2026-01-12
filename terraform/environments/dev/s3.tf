@@ -77,7 +77,7 @@ resource "aws_s3_bucket" "athena_results" {
   tags = merge(
     local.common_tags,
     {
-      Purpose = "Athena query results"
+      Purpose = "Store Athena query results"
     }
   )
 }
@@ -296,6 +296,20 @@ resource "aws_s3_bucket_lifecycle_configuration" "logs" {
   }
 }
 
+resource "aws_s3_bucket_lifecycle_configuration" "athena_results" {
+  bucket = aws_s3_bucket.athena_results.id
+
+  rule {
+    id     = "delete-old-results"
+    status = "Enabled"
+
+    # Delete Athena query results after 30 days
+    expiration {
+      days = 7 # Query results are temporary
+    }
+  }
+}
+
 # Logging configuration - track access to data buckets
 resource "aws_s3_bucket_logging" "raw_data" {
   bucket = aws_s3_bucket.raw_data.id
@@ -342,4 +356,9 @@ output "logs_bucket_name" {
 output "scripts_bucket_name" {
   value = aws_s3_bucket.scripts.id
   description = "Name of the scripts S3 bucket"
+}
+
+output "athena_results_bucket" {
+  value = aws_s3_bucket.athena_results.bucket
+  description = "Name of the Athena query results S3 bucket"
 }
