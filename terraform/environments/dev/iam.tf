@@ -3,7 +3,7 @@
 
 # 1. Lambda Execution Role - for data processing functions
 resource "aws_iam_role" "lambda_execution" {
-  name = "${local.project_name}-lambda-execution-${local.environment}"
+  name = "${var.project_name}-lambda-execution-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -18,12 +18,12 @@ resource "aws_iam_role" "lambda_execution" {
     ]
   })
   
-  tags = local.common_tags
+  tags = var.common_tags
 }
 
-# Lambsa policy - Read from one bucket, write to another, log to CloudWatch
-resource "aws_iam_role_policy" "lambda_s3_access" {
-  name = "s3-access"
+# Lambda policy for s3, cloudwatch and secrets manager
+resource "aws_iam_role_policy" "lambda_policy" {
+  name = "${var.project_name}-lambda-policy"
   role = aws_iam_role.lambda_execution.id
 
   policy = jsonencode({
@@ -33,25 +33,25 @@ resource "aws_iam_role_policy" "lambda_s3_access" {
         Effect   = "Allow"
         Action = [
           "s3:GetObject",
-          "s3:ListBucket"
+          "s3:PutObject",
+          "s3:ListBucket",
+          "s3:DeleteObject"
         ]
         Resource = [
-          aws_s3_bucket.raw_data.arn,
-          "${aws_s3_bucket.raw_data.arn}/*",
-          aws_s3_bucket.cleaned_data.arn,
-          "${aws_s3_bucket.cleaned_data.arn}/*"
+          "${aws_s3_bucket.bronze.arn}/*",
+          "${aws_s3_bucket.silver.arn}/*",
+          "${aws_s3_bucket.gold.arn}/*",
+          aws_s3_bucket.bronze.arn,
+          aws_s3_bucket.silver.arn,
+          aws_s3_bucket.gold.arn
         ]
       },
       {
         Effect   = "Allow"
         Action = [
-          "s3:PutObject",
-          "s3:DeleteObject"
+          "secretsmanager:GetSecretValue"
         ]
-        Resource = [
-          "${aws_s3_bucket.cleaned_data.arn}/*",
-          "${aws_s3_bucket.enriched_data.arn}/*"
-        ]
+        Resource = aws_secretsmanager_secret.bgg_token.arn
       },
       {
         Effect   = "Allow"
@@ -61,6 +61,20 @@ resource "aws_iam_role_policy" "lambda_s3_access" {
           "logs:PutLogEvents"
         ]
         Resource = "arn:aws:logs:*:*:*"
+      },
+      {
+        Effect   = "Allow"
+        Action = [
+          "glue:GetTable",
+          "glue:GetDatabase",
+          "glue:CreateTable",
+          "glue:UpdateTable",
+          "glue:BatchCreatePartition",
+          "glue:CreatePartition",
+          "glue:GetPartition",
+          "glue:GetPartitions"
+        ]
+        Resource = "*"
       }
     ]
   })
@@ -83,7 +97,7 @@ resource "aws_iam_role" "airflow_ec2" {
     ]
   })
   
-  tags = local.common_tags
+  tags = var.common_tags
 }
 
 # Airflow policy - Can invoke Lambda, write to s3, and read from s3
@@ -111,12 +125,12 @@ resource "aws_iam_role_policy" "airflow_permissions" {
           "s3:DeleteObject"
         ]
         Resource = [
-          aws_s3_bucket.raw_data.arn,
-          "${aws_s3_bucket.raw_data.arn}/*",
-          aws_s3_bucket.cleaned_data.arn,
-          "${aws_s3_bucket.cleaned_data.arn}/*",
-          aws_s3_bucket.enriched_data.arn,
-          "${aws_s3_bucket.enriched_data.arn}/*",
+          aws_s3_bucket.bronze.arn,
+          "${aws_s3_bucket.bronze.arn}/*",
+          aws_s3_bucket.silver.arn,
+          "${aws_s3_bucket.silver.arn}/*",
+          aws_s3_bucket.gold.arn,
+          "${aws_s3_bucket.gold.arn}/*",
           aws_s3_bucket.logs.arn,
           "${aws_s3_bucket.logs.arn}/*",
         ]
@@ -176,8 +190,8 @@ resource "aws_iam_role_policy" "athena_s3_access" {
           "s3:ListBucket"
         ]
         Resource = [
-          aws_s3_bucket.enriched_data.arn,
-          "${aws_s3_bucket.enriched_data.arn}/*",
+          aws_s3_bucket.gold.arn,
+          "${aws_s3_bucket.gold.arn}/*",
           aws_s3_bucket.athena_results.arn,
           "${aws_s3_bucket.athena_results.arn}/*"
         ]
@@ -219,12 +233,12 @@ resource "aws_iam_policy" "developer_access" {
             "s3:*"
         ]
         Resource = [
-            aws_s3_bucket.raw_data.arn,
-            "${aws_s3_bucket.raw_data.arn}/*",
-            aws_s3_bucket.cleaned_data.arn,
-            "${aws_s3_bucket.cleaned_data.arn}/*",
-            aws_s3_bucket.enriched_data.arn,
-            "${aws_s3_bucket.enriched_data.arn}/*",
+            aws_s3_bucket.bronze.arn,
+            "${aws_s3_bucket.bronze.arn}/*",
+            aws_s3_bucket.silver.arn,
+            "${aws_s3_bucket.silver.arn}/*",
+            aws_s3_bucket.gold.arn,
+            "${aws_s3_bucket.gold.arn}/*",
             aws_s3_bucket.logs.arn,
             "${aws_s3_bucket.logs.arn}/*",
             aws_s3_bucket.scripts.arn,
@@ -250,10 +264,82 @@ resource "aws_iam_policy" "developer_access" {
   tags = local.common_tags
 }
 
+# Glue Crawler Role
+resource "aws_iam_role" "glue_crawler" {
+  name = "${var.project_name}-glue-crawler-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "glue.amazonaws.com"
+        }
+      }
+    ]
+  })
+
+  tags = var.common_tags
+}
+
+# Attach AWS managed policy for Glue service role
+resource "aws_iam_role_policy_attachment" "glue_service_role_attachment" {
+  role       = aws_iam_role.glue_crawler.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole"
+}
+
+# Glue S3 Access Policy
+resource "aws_iam_role_policy" "glue_s3_policy" {
+  name = "${var.project_name}-glue-s3-policy"
+  role = aws_iam_role.glue_crawler.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:ListBucket"
+        ]
+        Resource = [
+          "${aws_s3_bucket.silver.arn}/*",
+          "${aws_s3_bucket.gold.arn}/*",
+          aws_s3_bucket.silver.arn,
+          aws_s3_bucket.gold.arn
+        ]
+      }
+    ]
+  })
+}
+
+# Secrets Manager for BGG Token
+resource "aws_secretsmanager_secret" "bgg_token" {
+  name = "${var.project_name}-bgg-token"
+  description = "BGG API Bearer Token"
+  
+  tags = var.common_tags
+}
+
+resource "aws_secretsmanager_secret_version" "bgg_token" {
+  secret_id = aws_secretsmanager_secret.bgg_token.id
+  secret_string = jsondecode({
+    token = var.bgg_bearer_token
+  })
+}
+
 # Outputs
-output "lambda_role_arn" {
+output "lambda_execution_role_arn" {
   value = aws_iam_role.lambda_execution.arn
   description = "ARN of the Lambda execution role"
+}
+
+output "glue_crawler_role_arn" {
+  value = aws_iam_role.glue_crawler.arn
+  description = "ARN of the Glue Crawler role"
 }
 
 output "airflow_instance_profile_name" {

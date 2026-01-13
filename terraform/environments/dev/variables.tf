@@ -40,3 +40,12 @@ variable "alert_email" {
   type        = string
   # defined in terraform.tfvars
 }
+
+variable "common_tags" {
+  description = "Common tags for all resources"
+  type        = map(string)
+  default = {
+    Project = "boardgames_sommelier"
+  }
+  
+}

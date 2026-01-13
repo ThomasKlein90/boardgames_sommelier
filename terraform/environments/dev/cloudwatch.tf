@@ -99,6 +99,45 @@ resource "aws_cloudwatch_metric_alarm" "cleaning_error_alarm" {
     tags = local.common_tags
 }
 
+# Alerts on Lambda errors and duration
+resource "aws_cloudwatch_metric_alarm" "lambda_errors" {
+  alarm_name = "${var.project_name}-lambda-errors"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "LambdaErrors"
+  namespace = "AWS/Lambda"
+  period              = "300" # 5 minutes
+  statistic = "Sum"
+  threshold = "5" # Alert if more than 5 errors in 5 minutes
+  alarm_description = "Alert when Lambda functions have errors"
+  treat_missing_data = "notBreaching"
+
+  dimensions = {
+    FunctionName = aws_lambda_function.extract_bgg_data.function_name
+  }
+
+  tags = var.common_tags
+}
+
+resource "aws_cloudwatch_metric_alarm" "lambda_duration" {
+  alarm_name = "${var.project_name}-lambda-duration"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "Duration"
+  namespace = "AWS/Lambda"
+  period              = "300" # 5 minutes
+  statistic = "Average"
+  threshold = "300000" # Alert if average duration exceeds 5 seconds
+  alarm_description = "Alert when Lambda duration is too high"
+
+  dimensions = {
+    FunctionName = aws_lambda_function.extract_bgg_data.function_name
+  }
+
+  tags = var.common_tags
+}
+
+
 # Cloudwatch Dashboard for monitoring (Free!)
 resource "aws_cloudwatch_dashboard" "pipeline_dashboard" {
   dashboard_name = "bgg-pipeline-${local.environment}"
