@@ -14,38 +14,38 @@ locals {
 }
 
 # Raw data bucket = stores data exactly as received from API
-resource "aws_s3_bucket" "raw_data" {
-  bucket = "${local.project_name}-raw${local.environment}-${data.aws_caller_identity.current.account_id}"
+resource "aws_s3_bucket" "bronze" {
+  bucket = "${local.project_name}-bronze${local.environment}-${data.aws_caller_identity.current.account_id}"
 
   tags = merge(
-    local.common_tags,
+    var.common_tags,
     {
-      DataLayer = "raw"
-      Purpose   = "Store raw BGG API responses"
+      Name = "Bronze Layer - Raw Data"
+      Layer   = "bronze"
     })
 }
 
 # Cleaned data bucket = stores data after basic cleaning and validation
-resource "aws_s3_bucket" "cleaned_data" {
-  bucket = "${local.project_name}-cleaned${local.environment}-${data.aws_caller_identity.current.account_id}"
+resource "aws_s3_bucket" "silver" {
+  bucket = "${local.project_name}-silver${local.environment}-${data.aws_caller_identity.current.account_id}"
 
   tags = merge(
-    local.common_tags,
+    var.common_tags,
     {
-      DataLayer = "cleaned"
-      Purpose   = "Store cleaned and validated BGG data"
+      Name = "Silver Layer - Cleaned Data"
+      Layer   = "silver"
     })
 }
 
 # Enriched data bucket = stores data after enrichment and transformations, ready for ML/analytics
-resource "aws_s3_bucket" "enriched_data" {
-  bucket = "${local.project_name}-enriched${local.environment}-${data.aws_caller_identity.current.account_id}"
+resource "aws_s3_bucket" "gold" {
+  bucket = "${local.project_name}-gold${local.environment}-${data.aws_caller_identity.current.account_id}"
 
   tags = merge(
-    local.common_tags,
+    var.common_tags,
     {
-      DataLayer = "enriched"
-      Purpose   = "Store enriched BGG data for analytics and ML"
+      Name = "Gold Layer - Enriched Data"
+      Layer   = "gold"
     })
 }
 
@@ -86,24 +86,24 @@ resource "aws_s3_bucket" "athena_results" {
 data "aws_caller_identity" "current" {}
 
 # Versioning = Enable for all buckets except logs and scripts
-resource "aws_s3_bucket_versioning" "raw_data" {
-    bucket = aws_s3_bucket.raw_data.id
+resource "aws_s3_bucket_versioning" "bronze" {
+    bucket = aws_s3_bucket.bronze.id
 
     versioning_configuration {
       status = "Enabled"
     }
 }
 
-resource "aws_s3_bucket_versioning" "cleaned_data" {
-    bucket = aws_s3_bucket.cleaned_data.id
+resource "aws_s3_bucket_versioning" "silver" {
+    bucket = aws_s3_bucket.silver.id
 
     versioning_configuration {
       status = "Enabled"
     }
 }
 
-resource "aws_s3_bucket_versioning" "enriched_data" {
-    bucket = aws_s3_bucket.enriched_data.id
+resource "aws_s3_bucket_versioning" "gold" {
+    bucket = aws_s3_bucket.gold.id
 
     versioning_configuration {
       status = "Enabled"
@@ -111,9 +111,8 @@ resource "aws_s3_bucket_versioning" "enriched_data" {
 }
 
 # Encryption = Enable server-side encryption for all buckets
-resource "aws_s3_bucket_server_side_encryption_configuration" "raw_data" {
-  bucket = aws_s3_bucket.raw_data.id
-
+resource "aws_s3_bucket_server_side_encryption_configuration" "bronze" {
+  bucket = aws_s3_bucket.bronze.id
   rule {
     apply_server_side_encryption_by_default {
       sse_algorithm = "AES256"
@@ -121,9 +120,8 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "raw_data" {
   }
 }
 
-resource "aws_s3_bucket_server_side_encryption_configuration" "cleaned_data" {
-  bucket = aws_s3_bucket.cleaned_data.id
-
+resource "aws_s3_bucket_server_side_encryption_configuration" "silver" {
+  bucket = aws_s3_bucket.silver.id
   rule {
     apply_server_side_encryption_by_default {
       sse_algorithm = "AES256"
@@ -131,9 +129,8 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "cleaned_data" {
   }
 }
 
-resource "aws_s3_bucket_server_side_encryption_configuration" "enriched_data" {
-  bucket = aws_s3_bucket.enriched_data.id
-
+resource "aws_s3_bucket_server_side_encryption_configuration" "gold" {
+  bucket = aws_s3_bucket.gold.id
   rule {
     apply_server_side_encryption_by_default {
       sse_algorithm = "AES256"
@@ -173,8 +170,8 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "athena_results" {
 
 
 # Block public access for all buckets - essential security best practice
-resource "aws_s3_bucket_public_access_block" "raw_data" {
-  bucket = aws_s3_bucket.raw_data.id
+resource "aws_s3_bucket_public_access_block" "bronze" {
+  bucket = aws_s3_bucket.bronze.id
 
   block_public_acls       = true
   block_public_policy     = true
@@ -182,8 +179,8 @@ resource "aws_s3_bucket_public_access_block" "raw_data" {
   restrict_public_buckets = true
 }
 
-resource "aws_s3_bucket_public_access_block" "cleaned_data" {
-  bucket = aws_s3_bucket.cleaned_data.id
+resource "aws_s3_bucket_public_access_block" "silver" {
+  bucket = aws_s3_bucket.silver.id
 
   block_public_acls       = true
   block_public_policy     = true
@@ -191,9 +188,8 @@ resource "aws_s3_bucket_public_access_block" "cleaned_data" {
   restrict_public_buckets = true
 }
 
-resource "aws_s3_bucket_public_access_block" "enriched_data" {
-  bucket = aws_s3_bucket.enriched_data.id
-
+resource "aws_s3_bucket_public_access_block" "gold" {
+  bucket = aws_s3_bucket.gold.id
   block_public_acls       = true
   block_public_policy     = true
   ignore_public_acls      = true
@@ -228,22 +224,21 @@ resource "aws_s3_bucket_public_access_block" "athena_results" {
 }
 
 # Lifecycle policies - move old data to cheaper storage (Glacier) after 30 days, delete after 365 days
-resource "aws_s3_bucket_lifecycle_configuration" "raw_data" {
-  bucket = aws_s3_bucket.raw_data.id
+resource "aws_s3_bucket_lifecycle_configuration" "bronze" {
+  bucket = aws_s3_bucket.bronze.id
 
   rule {
-    id     = "transition-old-data"
+    id     = "transition-to-ia"
     status = "Enabled"
 
-    # Move to Intelligent-Tiering after 30 days (automatically optimizes costs)
     transition {
-      days          = 30
-      storage_class = "INTELLIGENT_TIERING"
+      days          = 90
+      storage_class = "STANDARD_IA"
     }
 
-    # Move to Glacier after 90 days (very cheap, retrieval takes hours)
+    # Move to Glacier after 180 days (very cheap, retrieval takes hours)
     transition {
-        days =  90
+        days =  180
         storage_class = "GLACIER"
     }
 
@@ -259,8 +254,8 @@ resource "aws_s3_bucket_lifecycle_configuration" "raw_data" {
   }
 }
 
-resource "aws_s3_bucket_lifecycle_configuration" "cleaned_data" {
-  bucket = aws_s3_bucket.cleaned_data.id
+resource "aws_s3_bucket_lifecycle_configuration" "silver" {
+  bucket = aws_s3_bucket.silver.id
 
   rule {
     id     = "transition-old-data"
@@ -311,41 +306,56 @@ resource "aws_s3_bucket_lifecycle_configuration" "athena_results" {
 }
 
 # Logging configuration - track access to data buckets
-resource "aws_s3_bucket_logging" "raw_data" {
-  bucket = aws_s3_bucket.raw_data.id
+resource "aws_s3_bucket_logging" "bronze" {
+  bucket = aws_s3_bucket.bronze.id
 
   target_bucket = aws_s3_bucket.logs.id
-  target_prefix = "s3-access-logs/raw_data/"
+  target_prefix = "s3-access-logs/bronze/"
 }
 
-resource "aws_s3_bucket_logging" "cleaned_data" {
-  bucket = aws_s3_bucket.cleaned_data.id
+resource "aws_s3_bucket_logging" "silver" {
+  bucket = aws_s3_bucket.silver.id
 
   target_bucket = aws_s3_bucket.logs.id
-  target_prefix = "s3-access-logs/cleaned_data/"
+  target_prefix = "s3-access-logs/silver/"
 }
 
-resource "aws_s3_bucket_logging" "enriched_data" {
-  bucket = aws_s3_bucket.enriched_data.id
+resource "aws_s3_bucket_logging" "gold" {
+  bucket = aws_s3_bucket.gold.id
 
   target_bucket = aws_s3_bucket.logs.id
-  target_prefix = "s3-access-logs/enriched_data/"
+  target_prefix = "s3-access-logs/gold/"
 }
 
 # Outputs for use in other modules
-output "raw_bucket_name" {
-  value = aws_s3_bucket.raw_data.id
-  description = "Name of the raw data S3 bucket"
+output "bronze_bucket_name" {
+  value = aws_s3_bucket.bronze.id
+  description = "Name of the bronze data S3 bucket"
 }
 
-output "cleaned_bucket_name" {
-  value = aws_s3_bucket.cleaned_data.id
-  description = "Name of the cleaned data S3 bucket"
+output "silver_bucket_name" {
+  value = aws_s3_bucket.silver.id
+  description = "Name of the silver data S3 bucket"
 }
 
-output "enriched_bucket_name" {
-  value = aws_s3_bucket.enriched_data.id
-  description = "Name of the enriched data S3 bucket"
+output "gold_bucket_name" {
+  value = aws_s3_bucket.gold.id
+  description = "Name of the gold data S3 bucket"
+}
+
+output "bronze_bucket_arn" {
+  value = aws_s3_bucket.bronze.arn
+  description = "ARN of the bronze data S3 bucket"
+}
+
+output "silver_bucket_arn" {
+  value = aws_s3_bucket.silver.arn
+  description = "ARN of the silver data S3 bucket"
+}
+
+output "gold_bucket_arn" {
+  value = aws_s3_bucket.gold.arn
+  description = "ARN of the gold data S3 bucket"
 }
 
 output "logs_bucket_name" {
