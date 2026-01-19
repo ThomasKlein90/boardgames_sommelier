@@ -1,23 +1,36 @@
+locals {
+  dependencies_zip     = "${path.root}/../../lambda_layers/dependencies.zip"
+  extract_zip          = "${path.root}/../../lambda_functions/extract_bgg_data.zip"
+  clean_zip            = "${path.root}/../../lambda_functions/clean_bgg_data.zip"
+  transform_zip        = "${path.root}/../../lambda_functions/transform_bgg_data.zip"
+  
+  # Generate hash only if file exists, otherwise use empty string
+  dependencies_hash    = fileexists(local.dependencies_zip) ? filebase64sha256(local.dependencies_zip) : base64sha256("placeholder")
+  extract_hash         = fileexists(local.extract_zip) ? filebase64sha256(local.extract_zip) : base64sha256("placeholder")
+  clean_hash           = fileexists(local.clean_zip) ? filebase64sha256(local.clean_zip) : base64sha256("placeholder")
+  transform_hash       = fileexists(local.transform_zip) ? filebase64sha256(local.transform_zip) : base64sha256("placeholder")
+}
+
 # Lambda Layer for dependencies (requests, boto3, etc.)
 resource "aws_lambda_layer_version" "dependencies" {
-  filename         = "lambda_layers/dependencies.zip"
+  filename         = local.dependencies_zip
   layer_name       = "${var.project_name}_dependencies"
 
   compatible_runtimes = ["python3.11"]
-  source_code_hash = filebase64sha256("lambda_layers/dependencies.zip")
+  source_code_hash = local.dependencies_hash
 }
 
 # Lambda Function: Bronze - Extract BGG Data
 resource "aws_lambda_function" "extract_bgg_data" {
   function_name = "${var.project_name}_extract_bgg_data"
-  filename      = "lambda_functions/extract_bgg_data.zip"
+  filename      = local.extract_zip
   handler       = "extract_bgg_data.lambda_handler"
   runtime       = "python3.11"
   role          = aws_iam_role.lambda_execution.arn
   memory_size   = 512
   timeout       = 900 # 15 minutes
 
-  source_code_hash = filebase64sha256("lambda_functions/extract_bgg_data.zip")
+  source_code_hash = local.extract_hash
 
   layers = [
     aws_lambda_layer_version.dependencies.arn
@@ -36,14 +49,14 @@ resource "aws_lambda_function" "extract_bgg_data" {
 # Lambda Function: Silver - Clean and validate BGG Data
 resource "aws_lambda_function" "clean_bgg_data" {
   function_name = "${var.project_name}_clean_bgg_data"
-  filename      = "lambda_functions/clean_bgg_data.zip"
+  filename      = local.clean_zip
   handler       = "clean_bgg_data.lambda_handler"
   runtime       = "python3.11"
   role          = aws_iam_role.lambda_execution.arn
   memory_size   = 1024
   timeout       = 900 # 15 minutes
 
-  source_code_hash = filebase64sha256("lambda_functions/clean_bgg_data.zip")
+  source_code_hash = local.clean_hash
 
   layers = [
     aws_lambda_layer_version.dependencies.arn
@@ -62,14 +75,14 @@ resource "aws_lambda_function" "clean_bgg_data" {
 # Lambda Function: Gold - Transform to star schema
 resource "aws_lambda_function" "transform_bgg_data" {
   function_name = "${var.project_name}_transform_bgg_data"
-  filename      = "lambda_functions/transform_bgg_data.zip"
+  filename      = local.transform_zip
   handler       = "transform_bgg_data.lambda_handler"
   runtime       = "python3.11"
   role          = aws_iam_role.lambda_execution.arn
   memory_size   = 2048
   timeout       = 900 # 15 minutes
 
-  source_code_hash = filebase64sha256("lambda_functions/transform_bgg_data.zip")
+  source_code_hash = local.transform_hash
 
   layers = [
     aws_lambda_layer_version.dependencies.arn

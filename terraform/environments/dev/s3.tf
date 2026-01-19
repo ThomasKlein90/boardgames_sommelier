@@ -230,6 +230,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "bronze" {
   rule {
     id     = "transition-to-ia"
     status = "Enabled"
+    filter {}
 
     transition {
       days          = 90
@@ -260,6 +261,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "silver" {
   rule {
     id     = "transition-old-data"
     status = "Enabled"
+    filter {}
 
     transition {
       days          = 90
@@ -283,6 +285,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "logs" {
   rule {
     id     = "expire-old-logs"
     status = "Enabled"
+    filter {}
 
     # Delete logs after 90 days to save costs
     expiration {
@@ -297,6 +300,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "athena_results" {
   rule {
     id     = "delete-old-results"
     status = "Enabled"
+    filter {}
 
     # Delete Athena query results after 30 days
     expiration {

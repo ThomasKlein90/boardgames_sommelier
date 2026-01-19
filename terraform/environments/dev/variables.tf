@@ -32,6 +32,7 @@ variable "my_ip" {
 variable "bgg_bearer_token" {
   description = "BGG API Bearer Token"
   type        = string
+  sensitive = true
   # defined in terraform.tfvars
 }
 
