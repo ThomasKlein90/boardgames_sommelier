@@ -17,23 +17,23 @@ resource "aws_glue_crawler" "silver_dimensions" {
   }
 
   s3_target {
-    path = "s3://${aws_s3_bucker.silver.id/bgg/dim_category}"
+    path = "s3://${aws_s3_bucket.silver.id}/bgg/dim_category"
   }
 
   s3_target {
-    path = "s3://${aws_s3_bucker.silver.id/bgg/dim_mechanic}"
+    path = "s3://${aws_s3_bucket.silver.id}/bgg/dim_mechanic"
   }
   
   s3_target {
-    path = "s3://${aws_s3_bucker.silver.id/bgg/dim_theme}"
+    path = "s3://${aws_s3_bucket.silver.id}/bgg/dim_theme"
   }
   
   s3_target {
-    path = "s3://${aws_s3_bucker.silver.id/bgg/dim_publisher}"
+    path = "s3://${aws_s3_bucket.silver.id}/bgg/dim_publisher"
   }
   
   s3_target {
-    path = "s3://${aws_s3_bucker.silver.id/bgg/dim_artist}"
+    path = "s3://${aws_s3_bucket.silver.id}/bgg/dim_artist"
   }
 
   configuration = jsonencode({
@@ -75,7 +75,7 @@ resource "aws_glue_crawler" "gold_facts" {
     }
 
     s3_target {
-      path = "s3://${aws_s3_bucket_gold.id}/bgg/fct_user_rating"
+      path = "s3://${aws_s3_bucket.gold.id}/bgg/fct_user_rating"
     }
 
   configuration = jsonencode({

@@ -326,7 +326,7 @@ resource "aws_secretsmanager_secret" "bgg_token" {
 
 resource "aws_secretsmanager_secret_version" "bgg_token" {
   secret_id = aws_secretsmanager_secret.bgg_token.id
-  secret_string = jsondecode({
+  secret_string = jsonencode({
     token = var.bgg_bearer_token
   })
 }
@@ -342,10 +342,11 @@ output "glue_crawler_role_arn" {
   description = "ARN of the Glue Crawler role"
 }
 
-output "airflow_instance_profile_name" {
-  value = aws_iam_instance_profile.airflow.name
-  description = "Name of the Airflow EC2 Instance profile"
-}
+# output "airflow_instance_profile_name" {
+#   value = aws_iam_instance_profile.airflow.name
+#   description = "Name of the Airflow EC2 Instance profile"
+# }
+# NOTE: aws_iam_instance_profile.airflow resource not declared. Uncomment when resource is added.
 
 output "developer_policy_arn" {
   value = aws_iam_policy.developer_access.arn
