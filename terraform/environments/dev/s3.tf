@@ -2,8 +2,8 @@
 # Following the medallion architecture: raw -> cleaned -> enriched
 
 locals {
-  project_name = "boardgames_sommelier"
-  environment = var.environment # change to "prod" when ready
+  project_name = lower(replace("boardgames_sommelier", "_", "-")) # S3 bucket names cannot have underscores
+  environment = lower(var.environment) # S3 bucket names must be lowercase
 
   common_tags = {
     Project     = var.project_name
@@ -15,7 +15,7 @@ locals {
 
 # Raw data bucket = stores data exactly as received from API
 resource "aws_s3_bucket" "bronze" {
-  bucket = "${local.project_name}-bronze${local.environment}-${data.aws_caller_identity.current.account_id}"
+  bucket = "${local.project_name}-bronze-${local.environment}-${data.aws_caller_identity.current.account_id}"
 
   tags = merge(
     var.common_tags,
@@ -27,7 +27,7 @@ resource "aws_s3_bucket" "bronze" {
 
 # Cleaned data bucket = stores data after basic cleaning and validation
 resource "aws_s3_bucket" "silver" {
-  bucket = "${local.project_name}-silver${local.environment}-${data.aws_caller_identity.current.account_id}"
+  bucket = "${local.project_name}-silver-${local.environment}-${data.aws_caller_identity.current.account_id}"
 
   tags = merge(
     var.common_tags,
@@ -39,7 +39,7 @@ resource "aws_s3_bucket" "silver" {
 
 # Enriched data bucket = stores data after enrichment and transformations, ready for ML/analytics
 resource "aws_s3_bucket" "gold" {
-  bucket = "${local.project_name}-gold${local.environment}-${data.aws_caller_identity.current.account_id}"
+  bucket = "${local.project_name}-gold-${local.environment}-${data.aws_caller_identity.current.account_id}"
 
   tags = merge(
     var.common_tags,
@@ -51,7 +51,7 @@ resource "aws_s3_bucket" "gold" {
 
 # Logs bucket - stores application and access logs
 resource "aws_s3_bucket" "logs" {
-  bucket = "${local.project_name}-logs${local.environment}-${data.aws_caller_identity.current.account_id}"
+  bucket = "${local.project_name}-logs-${local.environment}-${data.aws_caller_identity.current.account_id}"
 
   tags = merge(
     local.common_tags,
@@ -62,7 +62,7 @@ resource "aws_s3_bucket" "logs" {
 
 # Scripts bucket - stores ETL and utility scripts
 resource "aws_s3_bucket" "scripts" {
-  bucket = "${local.project_name}-scripts${local.environment}-${data.aws_caller_identity.current.account_id}"
+  bucket = "${local.project_name}-scripts-${local.environment}-${data.aws_caller_identity.current.account_id}"
 
   tags = merge(
     local.common_tags,
@@ -72,7 +72,7 @@ resource "aws_s3_bucket" "scripts" {
 }   
 
 resource "aws_s3_bucket" "athena_results" {
-  bucket = "${local.project_name}-athena-results${local.environment}-${data.aws_caller_identity.current.account_id}"
+  bucket = "${local.project_name}-athena-results-${local.environment}-${data.aws_caller_identity.current.account_id}"
 
   tags = merge(
     local.common_tags,

@@ -1,6 +1,9 @@
 import requests
 import xml.etree.ElementTree as ET
 import time
+import os
+import re
+from pathlib import Path
 from typing import Optional
 import json
 import warnings
@@ -34,6 +37,17 @@ class BGGAPITester:
         self.session.headers.update({
             'User-Agent': 'BGGDataPipeline/1.0 (Educational/Testing)'
         })
+        # Attempt to load a Bearer token from terraform tfvars
+        try:
+            token = self._load_bearer_from_tfvars()
+        except Exception:
+            token = None
+
+        if token:
+            # Don't print the full token; show masked confirmation
+            masked = f"{token[:4]}...{token[-4:]}" if len(token) > 8 else "(masked)"
+            self.session.headers.update({'Authorization': f'Bearer {token}'})
+            print(f"Authorization header set from terraform.tfvars (token {masked})")
         # prefer certifi CA bundle when available
         self.ca_bundle = certifi.where() if CERTIFI_AVAILABLE else None
     
@@ -100,6 +114,16 @@ class BGGAPITester:
 
         # At this point we have a `response` or none
         try:
+            # Add debug output for non-success responses
+            print(f"Raw status: {response.status_code}")
+            if response.status_code >= 400:
+                print("Response headers:")
+                for k, v in response.headers.items():
+                    print(f"  {k}: {v}")
+                body = response.text or ''
+                print("Response body (first 2000 chars):")
+                print(body[:2000])
+
             # Handle 202 Accepted - BGG is processing the request
             if response.status_code == 202:
                 print("BGG returned 202 - request queued. Retrying in 5 seconds...")
@@ -119,6 +143,31 @@ class BGGAPITester:
         except requests.exceptions.RequestException as e:
             print(f"✗ Error after request: {e}")
             return None
+
+    def _load_bearer_from_tfvars(self) -> str | None:
+        """
+        Look for `bgg_bearer_token` in likely terraform.tfvars locations and return it.
+        """
+        candidates = []
+        # Path relative to this file
+        base = Path(__file__).resolve().parent
+        candidates.append(base / 'terraform' / 'environments' / 'dev' / 'terraform.tfvars')
+        # Path relative to current working directory
+        candidates.append(Path.cwd() / 'terraform' / 'environments' / 'dev' / 'terraform.tfvars')
+
+        token_pattern = re.compile(r'bgg_bearer_token\s*=\s*"([^\"]+)"')
+
+        for p in candidates:
+            try:
+                if p.exists():
+                    txt = p.read_text(encoding='utf-8')
+                    m = token_pattern.search(txt)
+                    if m:
+                        return m.group(1).strip()
+            except Exception:
+                continue
+
+        return None
     
     def parse_and_display(self, xml_data: str):
         """

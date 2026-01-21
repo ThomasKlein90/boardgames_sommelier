@@ -122,9 +122,15 @@ resource "aws_security_group" "airflow_instance" {
 }
 
 # Create SSH key pair
+# NOTE: If key already exists in AWS, import it with:
+# terraform import aws_key_pair.airflow boardgames_sommelier-key
 resource "aws_key_pair" "airflow" {
   key_name   = "${var.project_name}-key"
   public_key = file("~/.ssh/id_rsa.pub") # Make sure you have an SSH key generated
+  
+  lifecycle {
+    ignore_changes = [public_key]
+  }
 }
 
 # EC2 instance for Airflow
