@@ -25,6 +25,7 @@ resource "aws_sns_topic_policy" "pipeline_alerts_policy" {
     Version = "2012-10-17"
     Statement = [
       {
+        Sid    = "AllowCloudWatchPublish"
         Effect = "Allow"
         Principal = {
           Service = "cloudwatch.amazonaws.com"
@@ -33,6 +34,7 @@ resource "aws_sns_topic_policy" "pipeline_alerts_policy" {
         Resource = aws_sns_topic.pipeline_alerts.arn
       },
       {
+        Sid    = "AllowLambdaPublish"
         Effect = "Allow"
         Principal = {
             Service = "lambda.amazonaws.com"

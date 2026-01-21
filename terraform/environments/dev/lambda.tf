@@ -1,8 +1,10 @@
 locals {
-  dependencies_zip     = "${path.root}/../../lambda_layers/dependencies.zip"
-  extract_zip          = "${path.root}/../../lambda_functions/extract_bgg_data.zip"
-  clean_zip            = "${path.root}/../../lambda_functions/clean_bgg_data.zip"
-  transform_zip        = "${path.root}/../../lambda_functions/transform_bgg_data.zip"
+  # Updated paths to use module path instead of relative paths
+  # This resolves from the current module directory
+  dependencies_zip     = "${path.module}/../../lambda_layers/dependencies.zip"
+  extract_zip          = "${path.module}/../../lambda_functions/extract_bgg_data.zip"
+  clean_zip            = "${path.module}/../../lambda_functions/clean_bgg_data.zip"
+  transform_zip        = "${path.module}/../../lambda_functions/transform_bgg_data.zip"
   
   # Generate hash only if file exists, otherwise use empty string
   dependencies_hash    = fileexists(local.dependencies_zip) ? filebase64sha256(local.dependencies_zip) : base64sha256("placeholder")
@@ -12,15 +14,27 @@ locals {
 }
 
 # Lambda Layer for dependencies (requests, boto3, etc.)
+# NOTE: Commented out because dependencies.zip does not exist
+# To enable: First create the ZIP file by running:
+#   cd lambda_layers && ./build_lambda_layer.sh
+# Or manually:
+#   cd lambda_layers/python && pip install -r requirements.txt -t . && cd .. && zip -r dependencies.zip python/
+/*
 resource "aws_lambda_layer_version" "dependencies" {
   filename         = local.dependencies_zip
   layer_name       = "${var.project_name}_dependencies"
 
   compatible_runtimes = ["python3.11"]
   source_code_hash = local.dependencies_hash
+  
+  depends_on = []
 }
+*/
 
 # Lambda Function: Bronze - Extract BGG Data
+# NOTE: Commented out because extract_bgg_data.zip does not exist
+# To enable: First create the ZIP file by packaging the lambda function code
+/*
 resource "aws_lambda_function" "extract_bgg_data" {
   function_name = "${var.project_name}_extract_bgg_data"
   filename      = local.extract_zip
@@ -32,9 +46,7 @@ resource "aws_lambda_function" "extract_bgg_data" {
 
   source_code_hash = local.extract_hash
 
-  layers = [
-    aws_lambda_layer_version.dependencies.arn
-  ]
+  layers = []
 
   environment {
     variables = {
@@ -45,8 +57,12 @@ resource "aws_lambda_function" "extract_bgg_data" {
   }
   tags = var.common_tags
 }
+*/
 
 # Lambda Function: Silver - Clean and validate BGG Data
+# NOTE: Commented out because clean_bgg_data.zip does not exist
+# To enable: First create the ZIP file by packaging the lambda function code
+/*
 resource "aws_lambda_function" "clean_bgg_data" {
   function_name = "${var.project_name}_clean_bgg_data"
   filename      = local.clean_zip
@@ -58,9 +74,7 @@ resource "aws_lambda_function" "clean_bgg_data" {
 
   source_code_hash = local.clean_hash
 
-  layers = [
-    aws_lambda_layer_version.dependencies.arn
-  ]
+  layers = []
 
   environment {
     variables = {
@@ -71,8 +85,12 @@ resource "aws_lambda_function" "clean_bgg_data" {
   }
   tags = var.common_tags
 }
+*/
 
 # Lambda Function: Gold - Transform to star schema
+# NOTE: Commented out because transform_bgg_data.zip does not exist
+# To enable: First create the ZIP file by packaging the lambda function code
+/*
 resource "aws_lambda_function" "transform_bgg_data" {
   function_name = "${var.project_name}_transform_bgg_data"
   filename      = local.transform_zip
@@ -84,9 +102,7 @@ resource "aws_lambda_function" "transform_bgg_data" {
 
   source_code_hash = local.transform_hash
 
-  layers = [
-    aws_lambda_layer_version.dependencies.arn
-  ]
+  layers = []
 
   environment {
     variables = {
@@ -97,29 +113,34 @@ resource "aws_lambda_function" "transform_bgg_data" {
   }
   tags = var.common_tags
 }
+*/
 
-# CloudWatch Log Groups
+# CloudWatch Log Groups for Lambda Functions (commented out since Lambda functions are not deployed yet)
+/*
 resource "aws_cloudwatch_log_group" "extract_bgg_data" {
-  name = "/aws/lambda/${aws_lambda_function.extract_bgg_data.function_name}"
+  name              = "/aws/lambda/${aws_lambda_function.extract_bgg_data.function_name}"
   retention_in_days = 14
 
   tags = var.common_tags
 }
 
 resource "aws_cloudwatch_log_group" "clean_bgg_data" {
-  name = "/aws/lambda/${aws_lambda_function.clean_bgg_data.function_name}"
+  name              = "/aws/lambda/${aws_lambda_function.clean_bgg_data.function_name}"
   retention_in_days = 14
 
   tags = var.common_tags
 }
 
 resource "aws_cloudwatch_log_group" "transform_bgg_data" {
-  name = "/aws/lambda/${aws_lambda_function.transform_bgg_data.function_name}"
+  name              = "/aws/lambda/${aws_lambda_function.transform_bgg_data.function_name}"
   retention_in_days = 14
 
   tags = var.common_tags
 }
+*/
 
+# S3 Event Notifications (commented out since Lambda functions are not deployed yet)
+/*
 # S3 Event Notification to trigger clean_bgg_data Lambda
 resource "aws_s3_bucket_notification" "bronze_trigger" {
   bucket = aws_s3_bucket.bronze.id
@@ -133,7 +154,9 @@ resource "aws_s3_bucket_notification" "bronze_trigger" {
 
   depends_on = [ aws_lambda_permission.allow_bronze_bucket ]
 }
-
+*/
+# Lambda Permissions and S3 Notifications (commented out since Lambda functions are not deployed yet)
+/*
 # Lambda Permission for S3 to invoke clean_bgg_data
 resource "aws_lambda_permission" "allow_bronze_bucket" {
   statement_id  = "AllowExecutionFromS3Bucket"
@@ -164,8 +187,10 @@ resource "aws_lambda_permission" "allow_silver_bucket" {
   principal     = "s3.amazonaws.com"
   source_arn    = aws_s3_bucket.silver.arn
 }
+*/
 
-# Outputs
+# Outputs (commented out since Lambda functions are not deployed yet)
+/*
 output "extract_lambda_arn" {
   value = aws_lambda_function.extract_bgg_data.arn
 }
@@ -177,3 +202,4 @@ output "clean_lambda_arn" {
 output "transform_lambda_arn" {
   value = aws_lambda_function.transform_bgg_data.arn
 }
+*/

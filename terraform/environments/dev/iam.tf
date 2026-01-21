@@ -82,7 +82,7 @@ resource "aws_iam_role_policy" "lambda_policy" {
 
 # 2. Airflow EC2 Role - for orchestrating the pipeline
 resource "aws_iam_role" "airflow_ec2" {
-  name = "${local.project_name}-airflow-ec2-${local.environment}"
+  name = "${var.project_name}-airflow-ec2-${var.environment}"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -157,7 +157,7 @@ resource "aws_iam_role_policy" "airflow_permissions" {
 
 # 3. Athena Query Role - for analyzing data
 resource "aws_iam_role" "athena_query" {
-  name = "${local.project_name}-athena-query-${local.environment}"
+  name = "${var.project_name}-athena-query-${var.environment}"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -221,7 +221,7 @@ resource "aws_iam_role_policy" "athena_s3_access" {
 # 4. Personal IAM User Policy (attack to existing user)
 # This gives full access for development
 resource "aws_iam_policy" "developer_access" {
-  name = "${local.project_name}-developer-access-${local.environment}"
+  name = "${var.project_name}-developer-access-${var.environment}"
   description = "Full access to BGG pipeline resources for development"
 
   policy = jsonencode({
@@ -261,7 +261,8 @@ resource "aws_iam_policy" "developer_access" {
       }
     ]
   })
-  tags = local.common_tags
+  # NOTE: Tags removed because terraform-user lacks iam:TagPolicy permission
+  # Tags can be added manually via AWS Console if needed
 }
 
 # Glue Crawler Role
@@ -318,10 +319,15 @@ resource "aws_iam_role_policy" "glue_s3_policy" {
 
 # Secrets Manager for BGG Token
 resource "aws_secretsmanager_secret" "bgg_token" {
-  name = "${var.project_name}-bgg-token"
-  description = "BGG API Bearer Token"
+  name                    = "${var.project_name}-bgg-token"
+  description             = "BGG API Bearer Token"
+  recovery_window_in_days = 0  # Force immediate deletion when destroyed to avoid "scheduled for deletion" state
   
   tags = var.common_tags
+
+  lifecycle {
+    ignore_changes = [policy]
+  }
 }
 
 resource "aws_secretsmanager_secret_version" "bgg_token" {
