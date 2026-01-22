@@ -1,5 +1,4 @@
 # lambda_functions/extract_bgg_data/extract_bgg_data.py
-# VERSION: v1.1.0 - Fixed BGG API endpoint to https://boardgamegeek.com/xmlapi2
 import json
 import boto3
 import os
@@ -368,7 +367,7 @@ def parse_game_xml(xml_content: str, game_id: int) -> Dict[str, Any]:
             })
 
         # Parse statistics
-        stats = item.find('statistics/ratings')
+        stats = item.findall('statistics/ratings')
         if stats is not None:
             try:
                 game_data['users_rated'] = int(get_attr(stats.find('usersrated'),'value', 0))
