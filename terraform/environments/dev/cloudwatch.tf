@@ -99,8 +99,7 @@ resource "aws_cloudwatch_metric_alarm" "cleaning_error_alarm" {
     tags = local.common_tags
 }
 
-# Alerts on Lambda errors and duration (commented out since Lambda functions are not deployed yet)
-/*
+# Alerts on Lambda errors and duration
 resource "aws_cloudwatch_metric_alarm" "lambda_errors" {
   alarm_name = "${var.project_name}-lambda-errors"
   comparison_operator = "GreaterThanThreshold"
@@ -137,7 +136,7 @@ resource "aws_cloudwatch_metric_alarm" "lambda_duration" {
 
   tags = var.common_tags
 }
-*/
+
 
 
 # Cloudwatch Dashboard for monitoring (Free!)
