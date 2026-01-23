@@ -5,6 +5,9 @@ locals {
   extract_zip          = "${path.module}/../../../lambda_functions/extract_bgg_data.zip"
   clean_zip            = "${path.module}/../../../lambda_functions/clean_bgg_data.zip"
   transform_zip        = "${path.module}/../../../lambda_functions/transform_bgg_data.zip"
+
+  # AWS provided pandas/pyarrow layer (AWS SDK Pandas a.k.a. AWS Data Wrangler)
+  aws_sdk_pandas_layer = "arn:aws:lambda:${var.aws_region}:336392948345:layer:AWSSDKPandas-Python311:1"
   
   # Generate hash only if file exists, otherwise use empty string
   dependencies_hash    = fileexists(local.dependencies_zip) ? filebase64sha256(local.dependencies_zip) : base64sha256("placeholder")
@@ -36,7 +39,7 @@ resource "aws_lambda_function" "extract_bgg_data" {
 
   source_code_hash = local.extract_hash
 
-  layers = [aws_lambda_layer_version.dependencies.arn]
+  layers = [local.aws_sdk_pandas_layer]
 
   environment {
     variables = {
@@ -60,7 +63,7 @@ resource "aws_lambda_function" "clean_bgg_data" {
 
   source_code_hash = local.clean_hash
 
-  layers = []
+  layers = [local.aws_sdk_pandas_layer]
 
   environment {
     variables = {
@@ -84,10 +87,11 @@ resource "aws_lambda_function" "transform_bgg_data" {
 
   source_code_hash = local.transform_hash
 
-  layers = []
+  layers = [local.aws_sdk_pandas_layer]
 
   environment {
     variables = {
+      BRONZE_BUCKET = aws_s3_bucket.bronze.id
       SILVER_BUCKET = aws_s3_bucket.silver.id
       GOLD_BUCKET   = aws_s3_bucket.gold.id
       REGION        = var.aws_region

@@ -13,7 +13,7 @@ import io
 from urllib.parse import unquote_plus
 
 # Configure logging
-logger = logging.getLoggger()
+logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 # Initialize AWS clients
@@ -166,7 +166,7 @@ def lambda_handler(event, context):
 
         # For bridge tables, we need the raw data
         # This is a simplified approach - in production, store relationships separately
-        bronze_bucket = os.environ('BRONZE_BUCKET')
+        bronze_bucket = os.environ['BRONZE_BUCKET']
 
         # List recent bronze files
         response = s3_client.list_objects_v2(
@@ -184,7 +184,7 @@ def lambda_handler(event, context):
             
             obj_response = s3_client.get_object(
                 Bucket=bronze_bucket,
-                Key=latest_file['key']
+                Key=latest_file['Key']
             )
             raw_games = json.loads(obj_response['Body'].read().decode('utf-8'))
 
@@ -207,10 +207,10 @@ def lambda_handler(event, context):
 
                 year = int(year)
 
-                # Drop year column before saving
-                year_df = year_df.drop('year', axis=1)
+                # Drop year column and reset index before saving
+                year_df = year_df.drop('year', axis=1).reset_index(drop=True)
 
-                table = pa.Table.from_pandas(year_df)
+                table = pa.Table.from_pandas(year_df, preserve_index=False)
 
                 s3_key = f"bgg/{table_name}/year_published={year}/data.parquet"
 
@@ -235,9 +235,10 @@ def lambda_handler(event, context):
             df_fact['extraction_date_parsed'] = pd.to_datetime(df_fact['extraction_date']).dt.date
 
             for date, date_df in df_fact.groupby('extraction_date_parsed'):
-                date_df = date_df.drop('extraction_date_parsed', axis=1)
+                # Drop both the parsed date and original extraction_date, then reset index
+                date_df = date_df.drop(['extraction_date_parsed', 'extraction_date'], axis=1).reset_index(drop=True)
 
-                table = pa.Table.from_pandas(date_df)
+                table = pa.Table.from_pandas(date_df, preserve_index=False)
 
                 s3_key = f"bgg/fct_user_rating/extraction_date={date}/data.parquet"
 

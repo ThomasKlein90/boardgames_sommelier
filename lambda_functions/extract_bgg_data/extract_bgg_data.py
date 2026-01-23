@@ -454,7 +454,7 @@ def lambda_handler(event, context):
         extraction_date = datetime.utcnow().strftime('%Y-%m-%d')
 
         for game_id in game_ids:
-            game_data = fetch_game_data(game_id, bearer_token)
+            game_data = fetch_game_data(game_id, bearer_token, max_retries=1)
 
             if game_data:
                 games_data.append(game_data)

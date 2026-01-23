@@ -142,6 +142,7 @@ resource "aws_instance" "airflow" {
   vpc_security_group_ids      = [aws_security_group.airflow_instance.id]
   key_name                    = aws_key_pair.airflow.key_name
   associate_public_ip_address = true
+  iam_instance_profile        = aws_iam_instance_profile.airflow.name
 
   root_block_device {
     volume_size = 40 # GB - adjust based on needs
