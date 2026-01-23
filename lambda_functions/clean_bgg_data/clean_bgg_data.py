@@ -224,8 +224,9 @@ def lambda_handler(event, context):
                 df_dim = extract_dimension_data(raw_games, dim_source)
 
                 if len(df_dim) > 0:
-                    # Convert to Parquet
-                    table = pa.Table.from_pandas(df_dim)
+                    # Reset index and convert to Parquet
+                    df_dim = df_dim.reset_index(drop=True)
+                    table = pa.Table.from_pandas(df_dim, preserve_index=False)
 
                     # Write to S3 (no partitioning for dimension tables)
                     timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')

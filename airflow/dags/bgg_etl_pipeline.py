@@ -1,12 +1,25 @@
 # airflow/dags/bgg_etl_pipeline.py
 
 from airflow import DAG
+from airflow.models import Variable
 from airflow.providers.amazon.aws.operators.lambda_function import LambdaInvokeFunctionOperator
 from airflow.providers.amazon.aws.sensors.s3 import S3KeySensor
 from airflow.providers.amazon.aws.operators.glue_crawler import GlueCrawlerOperator
 from airflow.operators.python import PythonOperator
 from datetime import datetime, timedelta
 import json
+import os
+
+# Get region from environment or use default
+REGION = os.environ.get('AWS_REGION', 'ap-southeast-2')
+
+# Get Airflow Variables (fetched at DAG parse time)
+GLUE_CRAWLER_ROLE_ARN = Variable.get('glue_crawler_role_arn', default_var='arn:aws:iam::021406833830:role/boardgames_sommelier-glue-crawler-role')
+SILVER_BUCKET = Variable.get('silver_bucket_name', default_var='boardgames-sommelier-silver-dev-021406833830')
+GOLD_BUCKET = Variable.get('gold_bucket_name', default_var='boardgames-sommelier-gold-dev-021406833830')
+SILVER_CRAWLER_NAME = Variable.get('silver_crawler_name', default_var='bgg-pipeline-silver-dimensions-crawler')
+GOLD_CRAWLER_NAME = Variable.get('gold_crawler_name', default_var='bgg-pipeline-gold-fact-crawler')
+GLUE_DATABASE_NAME = Variable.get('glue_database_name', default_var='boardgames_sommelier_bgg_database')
 
 # Default arguments
 default_args = {
@@ -59,12 +72,11 @@ generate_ids_task = PythonOperator(
 # Task 2: Extract data from BGG API (Bronze layer)
 extract_task = LambdaInvokeFunctionOperator(
     task_id='extract_bgg_data',
-    function_name='bgg-pipeline-extract-bgg-data',
-    payload=json.dumps({
-        'game_ids': "{{ task_instance.xcom_pull(task_ids='generate_game_ids')['game_ids'] }}",
-        'batch_name': "{{ task_instance.xcom_pull(task_ids='generate_game_ids')['batch_name'] }}"
-    }),
-    aws_conn_id='aws_default',
+    function_name='boardgames_sommelier_extract_bgg_data',
+    payload='{{ task_instance.xcom_pull(task_ids="generate_game_ids") | tojson }}',
+    invocation_type='Event',  # fire-and-forget; downstream S3 sensor waits for output
+    region_name=REGION,
+    execution_timeout=timedelta(minutes=30),
     dag=dag
 )
 
@@ -73,6 +85,7 @@ wait_for_bronze = S3KeySensor(
     task_id='wait_for_bronze_file',
     bucket_name='{{ var.value.bronze_bucket_name }}',
     bucket_key='bgg/raw_games/extraction_date={{ ds }}/*.json',
+    wildcard_match=True,
     aws_conn_id='aws_default',
     timeout=600,
     poke_interval=30,
@@ -84,8 +97,9 @@ wait_for_bronze = S3KeySensor(
 wait_for_silver = S3KeySensor(
     task_id='wait_for_silver_file',
     bucket_name='{{ var.value.silver_bucket_name }}',
-    bucket_key='bgg/dim_game/**/*.parquet',
     aws_conn_id='aws_default',
+    bucket_key='bgg/dim_game/**/*.parquet',
+    wildcard_match=True,
     timeout=900,
     poke_interval=60,
     dag=dag
@@ -95,9 +109,10 @@ wait_for_silver = S3KeySensor(
 # We just need to wait for it
 wait_for_gold = S3KeySensor(
     task_id='wait_for_gold_file',
+    aws_conn_id='aws_default',
     bucket_name='{{ var.value.gold_bucket_name }}',
     bucket_key='bgg/br_game_category/**/*.parquet',
-    aws_conn_id='aws_default',
+    wildcard_match=True,
     timeout=900,
     poke_interval=60,
     dag=dag
@@ -106,16 +121,30 @@ wait_for_gold = S3KeySensor(
 # Task 6: Run Glue Crawler for Silver layer
 crawl_silver = GlueCrawlerOperator(
     task_id='crawl_silver_layer',
-    crawler_name='bgg-pipeline-silver-dimensions-crawler',
-    aws_conn_id='aws_default',
+    config={
+        'Name': SILVER_CRAWLER_NAME,
+        'Role': GLUE_CRAWLER_ROLE_ARN,
+        'DatabaseName': GLUE_DATABASE_NAME,
+        'Targets': {
+            'S3Targets': [{'Path': f's3://{SILVER_BUCKET}/bgg/'}]
+        }
+    },
+    region_name=REGION,
     dag=dag
 )
 
 # Task 7: Run Glue Crawler for Gold layer
 crawl_gold = GlueCrawlerOperator(
     task_id='crawl_gold_layer',
-    crawler_name='bgg-pipeline-gold-fact-crawler',
-    aws_conn_id='aws_default',
+    config={
+        'Name': GOLD_CRAWLER_NAME,
+        'Role': GLUE_CRAWLER_ROLE_ARN,
+        'DatabaseName': GLUE_DATABASE_NAME,
+        'Targets': {
+            'S3Targets': [{'Path': f's3://{GOLD_BUCKET}/bgg/'}]
+        }
+    },
+    region_name=REGION,
     dag=dag
 )
 

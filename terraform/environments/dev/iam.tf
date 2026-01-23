@@ -144,7 +144,26 @@ resource "aws_iam_role_policy" "airflow_permissions" {
       },
       {
         Effect   = "Allow"
+        Action = [          
+          "glue:CreateCrawler",
+          "glue:UpdateCrawler",
+          "glue:StartCrawler",
+          "glue:GetCrawler",
+          "glue:GetCrawlerMetrics",
+          "glue:ListCrawlers"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect   = "Allow"
         Action = [
+          "iam:PassRole"
+        ]
+        Resource = aws_iam_role.glue_crawler.arn
+      },
+      {
+        Effect   = "Allow"
+        Action = [          
           "logs:CreateLogGroup",
           "logs:CreateLogStream",
           "logs:PutLogEvents"
@@ -285,6 +304,12 @@ resource "aws_iam_role" "glue_crawler" {
   tags = var.common_tags
 }
 
+# Instance Profile for Airflow EC2
+resource "aws_iam_instance_profile" "airflow" {
+  name = "${var.project_name}-airflow-instance-profile"
+  role = aws_iam_role.airflow_ec2.name
+}
+
 # Attach AWS managed policy for Glue service role
 resource "aws_iam_role_policy_attachment" "glue_service_role_attachment" {
   role       = aws_iam_role.glue_crawler.name
@@ -348,11 +373,10 @@ output "glue_crawler_role_arn" {
   description = "ARN of the Glue Crawler role"
 }
 
-# output "airflow_instance_profile_name" {
-#   value = aws_iam_instance_profile.airflow.name
-#   description = "Name of the Airflow EC2 Instance profile"
-# }
-# NOTE: aws_iam_instance_profile.airflow resource not declared. Uncomment when resource is added.
+output "airflow_instance_profile_name" {
+  value = aws_iam_instance_profile.airflow.name
+  description = "Name of the Airflow EC2 Instance profile"
+}
 
 output "developer_policy_arn" {
   value = aws_iam_policy.developer_access.arn
