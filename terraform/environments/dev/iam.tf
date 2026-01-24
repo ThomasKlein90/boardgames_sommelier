@@ -365,7 +365,7 @@ resource "aws_secretsmanager_secret_version" "bgg_token" {
 # Add DynamoDB permissions to Lambda execution role
 resource "aws_iam_role_policy" "lambda_dynamodb_policy" {
   name = "${var.project_name}-lambda-dynamodb-policy-${var.environment}"
-  role = aws_iam_role.lambda_execution_role.id
+  role = aws_iam_role.lambda_execution.id
 
   policy = jsonencode({
     Version = "2012-10-17"
