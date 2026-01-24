@@ -362,6 +362,37 @@ resource "aws_secretsmanager_secret_version" "bgg_token" {
   })
 }
 
+# Add DynamoDB permissions to Lambda execution role
+resource "aws_iam_role_policy" "lambda_dynamodb_policy" {
+  name = "${var.project_name}-lambda-dynamodb-policy-${var.environment}"
+  role = aws_iam_role.lambda_execution_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action = [
+          "dynamodb:PutItem",
+          "dynamodb:GetItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:Query",
+          "dynamodb:Scan",
+          "dynamodb:BatchWriteItem",
+          "dynamodb:BatchGetItem"
+        ]
+        Resource = [
+          aws_dynamodb_table.bgg_api_state.arn,
+          "${aws_dynamodb_table.bgg_api_state.arn}/index/*",
+          aws_dynamodb_table.data_quality_metrics.arn,
+          "${aws_dynamodb_table.data_quality_metrics.arn}/index/*"
+        ]
+      }
+    ]
+  })
+}
+
+
 # Outputs
 output "lambda_execution_role_arn" {
   value = aws_iam_role.lambda_execution.arn
