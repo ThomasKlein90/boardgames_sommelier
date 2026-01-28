@@ -41,9 +41,11 @@ resource "aws_iam_role_policy" "lambda_policy" {
           "${aws_s3_bucket.bronze.arn}/*",
           "${aws_s3_bucket.silver.arn}/*",
           "${aws_s3_bucket.gold.arn}/*",
+          "${aws_s3_bucket.athena_results.arn}/*",
           aws_s3_bucket.bronze.arn,
           aws_s3_bucket.silver.arn,
-          aws_s3_bucket.gold.arn
+          aws_s3_bucket.gold.arn,
+          aws_s3_bucket.athena_results.arn
         ]
       },
       {
@@ -73,6 +75,24 @@ resource "aws_iam_role_policy" "lambda_policy" {
           "glue:CreatePartition",
           "glue:GetPartition",
           "glue:GetPartitions"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect   = "Allow"
+        Action = [
+          "athena:StartQueryExecution",
+          "athena:GetQueryExecution",
+          "athena:GetQueryResults",
+          "athena:StopQueryExecution",
+          "athena:GetWorkGroup"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect   = "Allow"
+        Action = [
+          "sns:Publish"
         ]
         Resource = "*"
       }

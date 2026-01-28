@@ -83,6 +83,39 @@ while ($retryCount -lt $maxRetries) {
 Remove-Item -Path $tempTransformDir -Recurse -Force -Confirm:$false
 Write-Host "Created: $transformZip"
 
+# Package data_quality function (code only, boto3 comes from runtime)
+Write-Host "Packaging data_quality (code only)..."
+$dqDir = "$RootDir/lambda_functions/data_quality"
+$dqZip = "$RootDir/lambda_functions/data_quality.zip"
+$tempDqDir = "$dqDir/temp_package"
+
+if (Test-Path $tempDqDir) {
+    Remove-Item -Path $tempDqDir -Recurse -Force -Confirm:$false
+}
+New-Item -ItemType Directory -Path $tempDqDir -Force | Out-Null
+Copy-Item "$dqDir/data_quality.py" $tempDqDir
+
+# Create zip
+if (Test-Path $dqZip) { Remove-Item $dqZip -Force -Confirm:$false }
+$retryCount = 0
+$maxRetries = 3
+while ($retryCount -lt $maxRetries) {
+    try {
+        Compress-Archive -Path "$tempDqDir\data_quality.py" -DestinationPath $dqZip -Force
+        break
+    } catch {
+        $retryCount++
+        if ($retryCount -lt $maxRetries) {
+            Write-Host "  Retry $retryCount/$maxRetries - waiting for file locks to release..."
+            Start-Sleep -Seconds 2
+        } else {
+            throw $_
+        }
+    }
+}
+Remove-Item -Path $tempDqDir -Recurse -Force -Confirm:$false
+Write-Host "Created: $dqZip"
+
 Write-Host ""
 Write-Host "Lambda functions packaged successfully!"
 Write-Host "Files:"
