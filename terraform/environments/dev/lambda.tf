@@ -46,6 +46,7 @@ resource "aws_lambda_function" "extract_bgg_data" {
       BRONZE_BUCKET = aws_s3_bucket.bronze.id
       SECRET_NAME = aws_secretsmanager_secret.bgg_token.name
       REGION = var.aws_region
+      STATE_TABLE_NAME = aws_dynamodb_table.bgg_api_state.name
     }
   }
   tags = var.common_tags

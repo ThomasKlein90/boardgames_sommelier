@@ -1,16 +1,16 @@
 # lambda_functions/extract_bgg_data/extract_bgg_data.py
-# VERSION: v1.1.0 - Fixed BGG API endpoint to https://boardgamegeek.com/xmlapi2
+# VERSION: v1.2.0 - Fixed BGG API endpoint to https://boardgamegeek.com/xmlapi2
 import json
 import boto3
 import os
 import requests
-import xml
 import xml.etree.ElementTree as ET
 from datetime import datetime
 import time
 import logging
-from typing import Dict, List, Any
+from typing import Dict, List, Optional, Any
 import socket
+import hashlib
 
 # Configure logging
 logger = logging.getLogger()
@@ -19,6 +19,8 @@ logger.setLevel(logging.INFO)
 # Intialize AWS clients
 s3_client = boto3.client('s3')
 secrets_client = boto3.client('secretsmanager')
+dynamodb = boto3.resource('dynamodb')
+state_table = dynamodb.Table(os.environ['STATE_TABLE_NAME'])
 
 def get_secret(secret_name: str, region: str) -> str:
     """Retrieve secret from AWS Secrets Manager."""
@@ -30,465 +32,304 @@ def get_secret(secret_name: str, region: str) -> str:
         logger.error(f"Error retrieving secret: {str(e)}")
         raise
 
-def fetch_game_data(game_id: int, bearer_token: str = None, max_retries: int = 3) -> Dict[str, Any]:
+def parse_input_event(event: Dict) -> List[str]:
+    """
+    Parse various input formats for game IDs
+    """
+    # Direct game_id
+    if 'game_id' in event:
+        return [str(event['game_id'])]
+    
+    # List of game_ids
+    if 'game_ids' in event:
+        return [str(gid) for gid in event['game_ids']]
+    
+    # S3 Reference
+    if 's3_key' in event:
+        s3_data = s3_client.get_object(
+            Bucket=event['bucket'],
+            Key=event['s3_key']
+        )
+        data = json.loads(s3_data['Body'].read())
+        return [str(gid) for gid in data.get('game_ids',[])]
+    
+    return []
+
+def should_skip_game(game_id: str) -> bool:
+    """Check if game should be skipped (recently processed)"""
+    try:
+        response = state_table.query(
+            KeyConditionExpression='game_id = :gid',
+            ExpressionAttributeValues={':gid': str(game_id)},
+            ScanIndexForward=False,
+            Limit=1
+            )
+
+        items = response.get('Items', {})
+        if items:
+            last_item = items[0]
+            # Skip if processed in last 24 hours and status is COMPLETED
+            if last_item.get('processing_status') == 'COMPLETED':
+                last_updated = datetime.fromisoformat(last_item['last_updated'])
+                hours_since = (datetime.utcnow() - last_updated).total_seconds() / 3600
+                return hours_since < 24
+        return False
+    
+    except:
+        return False
+    
+def update_game_state(game_id: str, status: str, game_data: Optional[Dict] = None, error: Optional[str] = None):
+    """Update game processing state in DynamoDB"""
+    item = {
+        'game_id': game_id,
+        'processing_status': status,
+        'last_updated': datetime.utcnow().isoformat()
+    }
+    if game_data:
+        # Store data hash to detect changes
+        data_hash = hashlib.md5(json.dumps(game_data, sort_keys=True).encode()).hexdigest()
+        item['data_hash'] = data_hash
+        item['year_published'] = game_data.get('year_published')
+        item['name'] = game_data.get('primary_name','')
+
+    if error:
+        item['error_message'] = error
+
+    #Set TTL for 90 days
+    item['ttl'] = int((datetime.utcnow().timestamp()) + 90*24*3600)
+
+    state_table.put_item(Item=item)
+
+def fetch_game_data(game_id: str, bearer_token: str) -> Optional[Dict]:
     """
     Fetch game data from BoardGameGeek XML API2 with retry logic.
 
     Args:
         game_id (int): The BGG ID of the game to fetch.
         bearer_token (str, optional): Bearer token for authentication. Defaults to None.
-        max_retries (int): Number of retry attempts for transient errors.
 
     Returns:
         Dictionary containing parsed game data.
     """
-    url = f"https://boardgamegeek.com/xmlapi2/thing?id={game_id}&stats=1"
+    url = f"https://boardgamegeek.com/xmlapi2/thing?id={game_id}&stats=1&type=boardgame"
     
     headers = {
+        'Authorization': f'Bearer {bearer_token}',
         'User-Agent': 'BoardGames Sommelier/1.0',
         'Accept': 'application/xml',
         'Accept-Encoding': 'gzip, deflate'
     }
 
-    if bearer_token:
-        headers['Authorization'] = f'Bearer {bearer_token}'
-
-    for attempt in range(max_retries):
-        try:
-            logger.info(f"Fetching data for game ID: {game_id} (attempt {attempt + 1}/{max_retries})")
-            response = requests.get(url, headers=headers, timeout=30)
-            response.raise_for_status()
-
-            # BGG API rate limiting
-            time.sleep(2)
-
-            return parse_game_xml(response.text, game_id)
-        
-        except (socket.gaierror, socket.timeout) as e:
-            # DNS resolution or socket timeout errors - these may be transient
-            logger.warning(f"Network error for game ID {game_id} (attempt {attempt + 1}): {str(e)}")
-            if attempt < max_retries - 1:
-                wait_time = 2 ** attempt  # Exponential backoff: 1, 2, 4 seconds
-                logger.info(f"Retrying after {wait_time} seconds...")
-                time.sleep(wait_time)
-            else:
-                logger.error(f"Failed to fetch game ID {game_id} after {max_retries} attempts: {str(e)}")
-                return None
-        
-        except requests.RequestException as e:
-            logger.error(f"HTTP error while fetching game ID {game_id}: {str(e)}")
-            return None
-        
-        except Exception as e:
-            logger.error(f"Unexpected error while fetching game ID {game_id}: {type(e).__name__}: {str(e)}")
-            return None
-    
-def parse_game_xml(xml_content: str, game_id: int) -> Dict[str, Any]:
-    """
-    Parse BGG XML response into structure dictionary
-
-    Args:
-        xml_content: XML string from BGG API
-        game_id: Game ID being parsed
-    
-    Returns:
-        Structured dictionary of game data
-    """
     try:
-        root = ET.fromstring(xml_content)
-        item = root.find('item')
+        response = requests.get(url, headers=headers, timeout=30)
+        response.raise_for_status()
+
+        # Parse XML response
+        root = ET.fromstring(response.content)
+        item = root.find('.//item[@type="boardgame"]')
 
         if item is None:
-            logger.warning(f'No item found for game {game_id}. XML content: {xml_content[:500]}')
+            logger.warning(f'No boardgame item found for game ID {game_id}.')
             return None
-        
-        # Helper function to safely get element text
-        def get_text(element, default=''):
-            return element.text if element is not None else default
-        
-        # Helper function to safely get attribute
-        def get_attr(element, attr, default=''):
-            return element.get(attr, default) if element is not None else default
-        
-        # Parse basic game information
-        game_data = {
-            'game_id': game_id,
-            'bgg_game_id': int(item.get('id')),
-            'extraction_date': datetime.utcnow().isoformat(),
 
-            # Names
-            'primary_name': '',
-            'alternate_names': [],
+        # Extract game data
+        game_data = extract_game_details(item)
+        game_data['api_response_raw'] = response.text
+        game_data['extraction_timestamp'] = datetime.utcnow().isoformat()
 
-            # Basic info
-            'year_published': None,
-            'description': '',
-            'thumbnail': '',
-            'image': '',
-
-            # Player counts
-            'min_players': None,
-            'max_players': None,
-            'min_players_best': None,
-            'max_players_best': None,
-
-            # Playing time
-            'min_playtime': None,
-            'max_playtime': None,
-            'playing_time': None,
-
-            # Age
-            'min_age': None,
-            'min_age_rec': None,
-
-            # Poll data
-            'suggested_numplayers': {},
-            'suggested_playerage': {},
-            'language_dependence': {},
-
-            # Designers, Artists, Publishers
-            'designers': [],
-            'artists': [],
-            'publishers': [],
-
-            # Categories, Mechanics, Themes
-            'categories': [],
-            'mechanics': [],
-            'themes': [],
-
-            # Statistics:
-            'users_rated': None,
-            'average_rating': None,
-            'bayes_average': None,
-            'stddev': None,
-            'median': None,
-            'owned': None,
-            'trading': None,
-            'wanting': None,
-            'wishing': None,
-            'num_comments': None,
-            'num_weights': None,
-            'average_weight': None,
-            'rank_boardgame': None,
-            'rank_strategy': None,
-            'rank_family': None,
-
-            # Raw XML for reference
-            'raw_xml': xml_content
-        }
-
-        # Parse names
-        for name in item.findall('name'):
-            name_type = name.get('type')
-            name_value = name.get('value','')
-
-            if name_type == 'primary':
-                game_data['primary_name'] = name_value
-            elif name_type == 'alternate':
-                game_data['alternate_names'].append(name_value)
-        
-        # Parse basic info
-        year_elem = item.find('yearpublished')
-        if year_elem is not None:
-            try:
-                game_data['year_published'] = int(year_elem.get('value',0))
-            except (ValueError, TypeError):
-                game_data['year_published'] = None
-
-        desc_elem = item.find('description')
-        game_data['description'] = get_text(desc_elem)
-
-        thumb_elem = item.find('thumbnail')
-        game_data['thumbnail'] = get_text(thumb_elem)
-
-        image_elem = item.find('image')
-        game_data['image'] = get_text(image_elem)
-
-        # Parse player counts
-        minplayers = item.find('minplayers')
-        if minplayers is not None:
-            try:
-                game_data['min_players'] = int(minplayers.get('value',0))
-            except (ValueError, TypeError):
-                pass
-            
-        maxplayers = item.find('maxplayers')
-        if maxplayers is not None:
-            try:
-                game_data['max_players'] = int(maxplayers.get('value',0))
-            except (ValueError, TypeError):
-                pass
-
-        # Parse suggested player count poll
-        numplayers_poll = item.find(".//poll[@name='suggested_numplayers']")
-        if numplayers_poll is not None:
-            for results in numplayers_poll.findall('results'):
-                num = results.get('numplayers')
-                best = 0
-                recommended = 0
-                not_recommended = 0
-
-                for result in results.findall('result'):
-                    value = result.get('value')
-                    numvotes = int(result.get('numvotes',0))
-
-                    if value == 'Best':
-                        best = numvotes
-                    elif value == 'Recommended':
-                        recommended = numvotes
-                    elif value == 'Not Recommended':
-                        not_recommended = numvotes
-                
-                game_data['suggested_numplayers'][num] = {
-                    'best': best,
-                    'recommended': recommended,
-                    'not_recommended': not_recommended
-                }
-
-            # Determine best player count
-            if game_data['suggested_numplayers']:
-                best_count = max(game_data['suggested_numplayers'].items(), key=lambda x: x[1]['best'])
-                if best_count[1]['best'] > 0:
-                    try:
-                        if '+' not in best_count[0]:
-                            game_data['min_players_best'] = int(best_count[0])
-                            game_data['max_players_best'] = int(best_count[0])
-                    except ValueError:
-                        pass
-
-        # Parse playing time
-        minplaytime = item.find('minplaytime')
-        if minplaytime is not None:
-            try:
-                game_data['min_playtime'] = int(minplaytime.get('value',0))
-            except (ValueError, TypeError):
-                pass
-
-        maxplaytime = item.find('maxplaytime')
-        if maxplaytime is not None:
-            try:
-                game_data['max_playtime'] = int(maxplaytime.get('value',0))
-            except (ValueError, TypeError):
-                pass
-            
-        playingtime = item.find('playingtime')
-        if playingtime is not None:
-            try:
-                game_data['playing_time'] = int(playingtime.get('value',0))
-            except (ValueError, TypeError):
-                pass
-
-        # Parse minimum age
-        minage = item.find('minage')
-        if minage is not None:
-            try:
-                game_data['min_age'] = int(minage.get('value',0))
-            except (ValueError, TypeError):
-                pass
-
-        # Parse suggested age poll
-        age_poll = item.find(".//poll[@name='suggested_playerage']")
-        if age_poll is not None:
-            age_votes = {}
-            for results in age_poll.findall('results'):
-                for result in results.findall('result'):
-                    age = result.get('value')
-                    numvotes = int(result.get('numvotes',0))
-                    age_votes[age] = numvotes
-
-            game_data['suggested_playerage'] = age_votes
-
-            # Determine recommended age
-            if age_votes:
-                max_age = max(age_votes.items(), key=lambda x: x[1])
-                try:
-                    game_data['min_age_rec'] = int(max_age[0])
-                except (ValueError, TypeError):
-                    pass
-        
-        # Parse language dependence poll
-        lang_poll = item.find(".//poll[@name='language_dependence']")
-        if lang_poll is not None:
-            lang_votes = {}
-            for results in lang_poll.findall('results'):
-                for result in results.findall('result'):
-                    level = result.get('level')
-                    value = result.get('value')
-                    numvotes = int(result.get('numvotes',0))
-                    lang_votes[f"level_{level}"] = {
-                        'description': value,
-                        'votes': numvotes
-                    }
-            game_data['language_dependence'] = lang_votes
-
-        
-        # Parse categories
-        for link in item.findall(".//link[@type='boardgamecategory']"):
-            game_data['categories'].append({
-                'id': int(link.get('id')),
-                'name': link.get('value','')
-            })
-
-        # Parse mechanics
-        for link in item.findall(".//link[@type='boardgamemechanic']"):
-            game_data['mechanics'].append({
-                'id': int(link.get('id')),
-                'name': link.get('value','')
-            })
-
-        # Parse families (to derive themes)
-        for link in item.findall(".//link[@type='boardgamefamily']"):
-            family_name = link.get('value','')
-            # Simple heuristic: families starting with "Theme:" are themes
-            if family_name.startswith('Theme:'):
-                game_data['themes'].append({
-                    'id': int(link.get('id')),
-                    'name': family_name.replace('Theme:','').strip()
-                })
-                
-        # Parse designers
-        for link in item.findall(".//link[@type='boardgamedesigner']"):
-            game_data['designers'].append({
-                'id': int(link.get('id')),
-                'name': link.get('value','')
-            })
-            
-        # Parse artists
-        for link in item.findall(".//link[@type='boardgameartist']"):
-            game_data['artists'].append({
-                'id': int(link.get('id')),
-                'name': link.get('value','')
-            })
-
-        # Parse publishers
-        for link in item.findall(".//link[@type='boardgamepublisher']"):
-            game_data['publishers'].append({
-                'id': int(link.get('id')),
-                'name': link.get('value','')
-            })
-
-        # Parse statistics
-        stats = item.find('statistics/ratings')
-        if stats is not None:
-            try:
-                game_data['users_rated'] = int(get_attr(stats.find('usersrated'),'value', 0))
-                game_data['average_rating'] = float(get_attr(stats.find('average'),'value', 0))
-                game_data['bayes_average'] = float(get_attr(stats.find('bayesaverage'),'value', 0))
-                game_data['stddev'] = float(get_attr(stats.find('stddev'),'value', 0))
-                game_data['median'] = float(get_attr(stats.find('median'),'value', 0))
-                game_data['owned'] = int(get_attr(stats.find('owned'),'value', 0))
-                game_data['trading'] = int(get_attr(stats.find('trading'),'value', 0))
-                game_data['wanting'] = int(get_attr(stats.find('wanting'),'value', 0))
-                game_data['wishing'] = int(get_attr(stats.find('wishing'),'value', 0))
-                game_data['num_comments'] = int(get_attr(stats.find('numcomments'),'value', 0))
-                game_data['num_weights'] = int(get_attr(stats.find('numweights'),'value', 0))
-                game_data['average_weight'] = float(get_attr(stats.find('averageweight'),'value', 0))
-            except (ValueError, TypeError) as e:
-                logger.warning(f"Error parsong statistics: {str(e)}")
-
-            # Parse ranks
-            ranks = stats.find('ranks')
-            if ranks is not None:
-                for rank in ranks.findall('rank'):
-                    rank_type = rank.get('type')
-                    rank_name = rank.get('name')
-                    rank_value = rank.get('value')
-
-                    try:
-                        rank_int = int(rank_value) if rank_value and rank_value != 'Not Ranked' else None
-                    except ValueError:
-                        rank_int = None
-
-                    if rank_name == 'boardgame':
-                        game_data['rank_boardgame'] = rank_int
-                    elif rank_name == 'strategygames':
-                        game_data['rank_strategy'] = rank_int
-                    elif rank_name == 'familygames':
-                        game_data['rank_family'] = rank_int
-                
         return game_data
-
+        
+    except requests.exceptions.RequestException as e:
+        logger.error(f"API request failed for game {game_id}: {str(e)}")
+        return None
+        
     except ET.ParseError as e:
-        logger.error(f"XML parsing error for game {game_id}: {str(e)}")
+        logger.error(f"XML parsing failed for game {game_id}: {str(e)}")
         return None
-    except Exception as e:
-        logger.error(f"Unexpected error parsing game {game_id}: {str(e)}")
-        return None
+
+
+def extract_game_details(item: ET.Element) -> Dict:
+    """Extract structured data from XML item"""
+
+    game_id = item.get('id')
+        
+    # Basic info
+    primary_name = item.find(".//name[@type='primary']")
+    year_published = item.find('.//yearpublished')
+    description = item.find('.//description')
+
+    # Player counts
+    min_players= item.find('.//minplayers')
+    max_players= item.find('.//maxplayers')
+    # Playing time
+    min_playtime= item.find('.//minplaytime')
+    max_playtime= item.find('.//maxplaytime')
+    playing_time= item.find('.//playingtime')
+    # Age
+    min_age= item.find('.//minage')
+
+    # Statistics
+    stats = item.find('.//statistics/ratings')
+
+    # Links (categories, mechanics, designers, artists, publishers)
+    categories = [link.get('value') for link in item.findall(".//link[@type='boardgamecategory']")]
+    mechanics = [link.get('value') for link in item.findall(".//link[@type='boardgamemechanic']")]
+    families = [link.get('value') for link in item.findall(".//link[@type='boardgamefamily']")]
+    designers = [link.get('value') for link in item.findall(".//link[@type='boardgamedesigner']")]
+    artists = [link.get('value') for link in item.findall(".//link[@type='boardgameartist']")]
+    publishers = [link.get('value') for link in item.findall(".//link[@type='boardgamepublisher']")]
+
+    # Polls
+    suggested_players = extract_poll_data(item, 'suggested_numplayers')
+    suggested_age = extract_poll_data(item, 'suggested_playerage')
+    language_dependence = extract_poll_data(item, 'language_dependence')
+
+    return {
+        'game_id': game_id,
+        'primary_name': primary_name.get('value') if primary_name is not None else None,
+        'year_published': int(year_published.get('value')) if year_published is not None else None,
+        'description': description.text if description is not None else None,
+        'min_players': int(min_players.get('value')) if min_players is not None else None,
+        'max_players': int(max_players.get('value')) if max_players is not None else None,
+        'min_playtime': int(min_playtime.get('value')) if min_playtime is not None else None,
+        'max_playtime': int(max_playtime.get('value')) if max_playtime is not None else None,
+        'playing_time': int(playing_time.get('value')) if playing_time is not None else None,
+        'min_age': int(min_age.get('value')) if min_age is not None else None,
+        'categories': categories,
+        'mechanics': mechanics,
+        'families': families,
+        'designers': designers,
+        'artists': artists,
+        'publishers': publishers,
+        'statistics': extract_statistics(stats) if stats is not None else {},
+        'polls': {
+            'suggested_players': suggested_players,
+            'suggested_age': suggested_age,
+            'language_dependence': language_dependence
+        }
+    }
+
+def extract_statistics(stats: ET.Element) -> Dict:
+    """Extract statistic from ratings element"""
+    
+    return {
+        'users_rated': int(stats.find('usersrated').get('value')) if stats.find('usersrated') is not None else 0,
+        'average_rating': float(stats.find('average').get('value')) if stats.find('average') is not None else 0.0,
+        'bayes_average_rating': float(stats.find('bayesaverage').get('value')) if stats.find('bayesaverage') is not None else 0.0,
+        'stddev': float(stats.find('stddev').get('value')) if stats.find('stddev') is not None else 0.0,
+        'owned': int(stats.find('owned').get('value')) if stats.find('owned') is not None else 0,
+        'trading': int(stats.find('trading').get('value')) if stats.find('trading') is not None else 0,
+        'wanting': int(stats.find('wanting').get('value')) if stats.find('wanting') is not None else 0,
+        'wishing': int(stats.find('wishing').get('value')) if stats.find('wishing') is not None else 0,
+        'num_comments': int(stats.find('numcomments').get('value')) if stats.find('numcomments') is not None else 0,
+        'num_weights': int(stats.find('numweights').get('value')) if stats.find('numweights') is not None else 0,
+        'average_weight': float(stats.find('averageweight').get('value')) if stats.find('averageweight') is not None else 0.0
+    }
+
+def extract_poll_data(item: ET.Element, poll_name: str) -> Dict:
+    """Extract poll data from XML item"""
+
+    poll = item.find(f".//poll[@name='{poll_name}']")
+    if poll is None:
+        return {}
+    
+    poll_data = {
+        'total_votes': int(poll.get('totalvotes', '0'))
+    }
+
+    results = []
+    for result_group in poll.findall('.//results'):
+        num_players = result_group.get('numplayers')
+
+        for result in result_group.findall('.//result'):
+            results.append({
+                'num_players': num_players,
+                'value': result.get('value'),
+                'num_votes': int(result.get('numvotes', '0'))
+            })
+
+    poll_data['results'] = results
+
+    return poll_data
+
+def store_raw_data(bucket: str, game_id: str, game_data: Dict):
+    """Store raw XML data in S3"""
+
+    # Partition by year for better organization
+    year = game_data.get('year_published', 'unknown')
+    date = datetime.utcnow().strftime('%Y%m%d')
+
+    s3_key = f"bgg/raw_games/year={year}/date={date}/game_{game_id}.json"
+
+    s3_client.put_object(
+        Bucket=bucket,
+        Key=s3_key,
+        Body=json.dumps(game_data, indent=2),
+        ContentType='application/json'
+    )
 
 def lambda_handler(event, context):
     """
-    Lambda handler for extracting BGG data
+    Extract game data from BGG API with state tracking
 
-    Expected event structure:
-    {
-        "game_ids": [421, 217372,...],
-        "batch_name"; "batch_1"         # optional
-    }
-   
+    Input event can be:
+    - Single game_id
+    - List of game_ids
+    - S3 reference to JSON file with game_ids   
     """
-    try:
-        # Get configuration from environment
-        bronze_bucket = os.environ['BRONZE_BUCKET']
-        secret_name = os.environ['SECRET_NAME']
-        region = os.environ['REGION']
 
-        # Get BGG token from Secrets Manager
-        bearer_token = get_secret(secret_name, region)
+    # Get configuration from environment
+    BRONZE_BUCKET = os.environ['BRONZE_BUCKET']
+    SECRET_NAME = os.environ['SECRET_NAME']
+    REGION = os.environ['REGION']
 
-        # Parse event
-        game_ids = event.get('game_ids',[])
-        batch_name = event.get('batch_name', f"batch_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}")
+    # Get BGG token from Secrets Manager
+    bearer_token = get_secret(SECRET_NAME, REGION)
 
-        if not game_ids:
-            logger.error("No game IDs provided")
-            return {
-                'statusCode': 400,
-                'body': json.dumps('No game IDs provided')
-            }
-        
-        logger.info(f"Processing {len(game_ids)} games in batch: {batch_name}")
+    # Parse input event
+    game_ids = parse_input_event(event)
 
-        # Fetch and parse games
-        games_data = []
-        failed_ids = []
-        extraction_date = datetime.utcnow().strftime('%Y-%m-%d')
+    results = {
+        'processed': 0,
+        'failed': 0,
+        'skipped': 0,
+        'errors': []
+    }
 
-        for game_id in game_ids:
-            game_data = fetch_game_data(game_id, bearer_token, max_retries=1)
+    for game_id in game_ids:
+        try:
+            # Check if game needs processing
+            if should_skip_game(game_id):
+                logger.info(f"Skipping game {game_id} as it was recently processed.")
+                results['skipped'] += 1
+                continue
+
+            # Update state as IN_PROGRESS
+            update_game_state(game_id, 'IN_PROGRESS')
+
+            # Fetch game data
+            game_data = fetch_game_data(game_id, bearer_token)
 
             if game_data:
-                games_data.append(game_data)
+                # Store raw data in S3
+                store_raw_data(BRONZE_BUCKET, game_id, game_data)
+
+                # Update state as COMPLETED
+                update_game_state(game_id, 'COMPLETED', game_data=game_data)
+
+                results['processed'] += 1
             else:
-                failed_ids.append(game_id)
+                # Update state as FAILED
+                update_game_state(game_id, 'FAILED', error='Failed to fetch or parse game data.')
+                results['failed'] += 1
 
-        # Save to S3 Bronze layer
-        if games_data:
-            s3_key = f"bgg/raw_games/extraction_date={extraction_date}/{batch_name}.json"
+        except Exception as e:
+            logger.error(f"Error processing game ID {game_id}: {str(e)}")
+            results['failed'] += 1
+            results['errors'].append({'game_id': game_id, 'error': str(e)})
+            update_game_state(game_id, 'FAILED', error=str(e))
 
-            s3_client.put_object(
-                Bucket=bronze_bucket,
-                Key=s3_key,
-                Body=json.dumps(games_data, indent=2),
-                ContentType='application/json'
-            )
-
-            logger.info(f"Successfully saved {len(games_data)} games to {s3_key}")
-
-        return {
-            'statusCode': 200,
-            'body': json.dumps({
-                'message': f'Successfully processed {len(games_data)} games',
-                'batch_name': batch_name,
-                'games_processed': len(games_data),
-                'games_failed': len(failed_ids),
-                'failed_ids': failed_ids,
-                's3_location': f"s3://{bronze_bucket}/bgg/raw_games/extraction_date={extraction_date}/{batch_name}.json"
-            })
-        }
-    
-    except Exception as e:
-        logger.error(f"Lambda execution error: {str(e)}")
-        return {
-            'statusCode': 500,
-            'body': json.dumps(f'Error: {str(e)}')
-        }
+    return {
+        'statusCode': 200,
+        'body': json.dumps(results)
+    }
