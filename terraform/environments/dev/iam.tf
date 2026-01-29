@@ -144,7 +144,9 @@ resource "aws_iam_role_policy" "airflow_permissions" {
           "s3:PutObject",
           "s3:GetObject",
           "s3:ListBucket",
-          "s3:DeleteObject"
+          "s3:DeleteObject",
+          "s3:GetBucketLocation",
+          "s3:ListBucketVersions"
         ]
         Resource = [
           aws_s3_bucket.bronze.arn,
@@ -155,6 +157,8 @@ resource "aws_iam_role_policy" "airflow_permissions" {
           "${aws_s3_bucket.gold.arn}/*",
           aws_s3_bucket.logs.arn,
           "${aws_s3_bucket.logs.arn}/*",
+          aws_s3_bucket.athena_results.arn,
+          "${aws_s3_bucket.athena_results.arn}/*",
         ]
       },
       {
@@ -191,6 +195,36 @@ resource "aws_iam_role_policy" "airflow_permissions" {
           "logs:PutLogEvents"
         ]
         Resource = "arn:aws:logs:*:*:*"
+      },
+      {
+        Effect   = "Allow"
+        Action = [
+          "athena:StartQueryExecution",
+          "athena:GetQueryExecution",
+          "athena:GetQueryResults",
+          "athena:StopQueryExecution",
+          "athena:GetWorkGroup",
+          "athena:BatchGetQueryExecution",
+          "athena:GetQueryResultsStream"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect   = "Allow"
+        Action = [
+          "glue:GetTable",
+          "glue:GetDatabase",
+          "glue:CreateTable",
+          "glue:UpdateTable",
+          "glue:DeleteTable",
+          "glue:BatchCreatePartition",
+          "glue:CreatePartition",
+          "glue:GetPartition",
+          "glue:GetPartitions",
+          "glue:UpdatePartition",
+          "glue:DeletePartition"
+        ]
+        Resource = "*"
       }
     ]
   })
