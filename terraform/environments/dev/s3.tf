@@ -376,3 +376,57 @@ output "athena_results_bucket" {
   value = aws_s3_bucket.athena_results.bucket
   description = "Name of the Athena query results S3 bucket"
 }
+
+
+# Additional S3 bucket for reference data and mappings
+resource "aws_s3_bucket" "reference_data" {
+  bucket = "${var.project_name}-reference-data-${var.environment}-${data.aws_caller_identity.current.account_id}"
+
+  tags = {
+    Name = "${var.project_name}-reference-data"
+    Environment = var.environment
+    ManagedBy   = "Terraform"
+  }
+}
+
+resource "aws_s3_bucket_versioning" "reference_data_versioning" {
+    bucket = aws_s3_bucket.reference_data.id
+
+    versioning_configuration {
+      status = "Enabled"
+    }
+}
+
+# Upload initial reference data mapping files (e.g., game categories, mechanics)
+resource "aws_s3_object" "category_mapping" {
+  bucket = aws_s3_bucket.reference_data.id
+  key    = "mappings/category_mapping.json"
+  source = "${path.module}/../../data/mappings/category_mapping.json"
+  etag   = filemd5("${path.module}/../../data/mappings/category_mapping.json")
+
+  tags = {
+    Name = "category-mapping"
+  }
+}
+
+resource "aws_s3_object" "mechanic_mapping" {
+  bucket = aws_s3_bucket.reference_data.id
+  key    = "mappings/mechanic_mapping.json"
+  source = "${path.module}/../../data/mappings/mechanic_mapping.json"
+  etag   = filemd5("${path.module}/../../data/mappings/mechanic_mapping.json") 
+
+  tags = {
+    Name = "mechanic-mapping"
+  }
+}
+
+resource "aws_s3_object" "theme_mapping" {
+  bucket = aws_s3_bucket.reference_data.id
+  key    = "mappings/theme_mapping.json"
+  source = "${path.module}/../../data/mappings/theme_mapping.json"
+  etag   = filemd5("${path.module}/../../data/mappings/theme_mapping.json")
+
+  tags = {
+    Name = "theme-mapping"
+  }
+}
