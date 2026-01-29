@@ -42,10 +42,12 @@ resource "aws_iam_role_policy" "lambda_policy" {
           "${aws_s3_bucket.silver.arn}/*",
           "${aws_s3_bucket.gold.arn}/*",
           "${aws_s3_bucket.athena_results.arn}/*",
+          "${aws_s3_bucket.reference_data.arn}/*",
           aws_s3_bucket.bronze.arn,
           aws_s3_bucket.silver.arn,
           aws_s3_bucket.gold.arn,
-          aws_s3_bucket.athena_results.arn
+          aws_s3_bucket.athena_results.arn,
+          aws_s3_bucket.reference_data.arn
         ]
       },
       {
