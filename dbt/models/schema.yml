@@ -1,0 +1,36 @@
+version: 2
+
+sources:
+  - name: raw
+    database: boardgames_sommelier_bgg_database
+    schema: default
+    tables:
+      - name: dim_game
+      - name: br_game_category
+      - name: br_game_mechanic
+      - name: br_game_family
+  - name: br_game_theme
+
+models:
+  - name: stg_games
+    description: "Staging models or Boardgames Sommelier cleaned data."
+    columns:
+      - name: game_id
+        description: "Unique identifier for each board game."
+        tests:
+          - unique
+          - not_null
+      - name: average_rating
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 10
+  
+  - name: dim_game_features
+    description: "Feature-engineered dimension table for ML modeling."
+    columns:
+      - name: game_id
+        description: "Unique identifier for each feature."
+        tests:
+          - unique
+          - not_null
