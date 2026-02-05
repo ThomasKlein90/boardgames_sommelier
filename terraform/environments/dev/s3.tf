@@ -82,6 +82,51 @@ resource "aws_s3_bucket" "athena_results" {
   )
 }
 
+# Bucket policy for Athena results - allow Lambda and Athena service access
+resource "aws_s3_bucket_policy" "athena_results" {
+  bucket = aws_s3_bucket.athena_results.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "AllowLambdaAccess"
+        Effect = "Allow"
+        Principal = {
+          AWS = aws_iam_role.lambda_execution.arn
+        }
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:ListBucket",
+          "s3:GetBucketLocation"
+        ]
+        Resource = [
+          aws_s3_bucket.athena_results.arn,
+          "${aws_s3_bucket.athena_results.arn}/*"
+        ]
+      },
+      {
+        Sid    = "AllowAthenaService"
+        Effect = "Allow"
+        Principal = {
+          Service = "athena.amazonaws.com"
+        }
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:GetBucketLocation",
+          "s3:ListBucket"
+        ]
+        Resource = [
+          aws_s3_bucket.athena_results.arn,
+          "${aws_s3_bucket.athena_results.arn}/*"
+        ]
+      }
+    ]
+  })
+}
+
 # Get current AWS account ID
 data "aws_caller_identity" "current" {}
 

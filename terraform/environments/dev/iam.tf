@@ -204,6 +204,8 @@ resource "aws_iam_role_policy" "airflow_permissions" {
           "athena:GetQueryResults",
           "athena:StopQueryExecution",
           "athena:GetWorkGroup",
+          "athena:GetDataCatalog",
+          "athena:ListDataCatalogs",
           "athena:BatchGetQueryExecution",
           "athena:GetQueryResultsStream"
         ]
@@ -213,7 +215,11 @@ resource "aws_iam_role_policy" "airflow_permissions" {
         Effect   = "Allow"
         Action = [
           "glue:GetTable",
+          "glue:GetTables",
+          "glue:GetTableVersions",
           "glue:GetDatabase",
+          "glue:GetDatabases",
+          "glue:CreateDatabase",
           "glue:CreateTable",
           "glue:UpdateTable",
           "glue:DeleteTable",
@@ -228,6 +234,12 @@ resource "aws_iam_role_policy" "airflow_permissions" {
       }
     ]
   })
+}
+
+# Attach AWS-managed Athena permissions for dbt on EC2
+resource "aws_iam_role_policy_attachment" "airflow_athena_full_access" {
+  role       = aws_iam_role.airflow_ec2.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonAthenaFullAccess"
 }
 
 # 3. Athena Query Role - for analyzing data

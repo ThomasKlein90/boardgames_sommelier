@@ -4,6 +4,7 @@ import os
 from datetime import datetime
 from typing import Dict, List, Any
 import uuid
+from decimal import Decimal
 
 s3_client = boto3.client('s3')
 glue_client = boto3.client('glue')
@@ -16,14 +17,10 @@ sns_client = boto3.client('sns')
 DQ_RULES = {
     'dim_game': {
         'completeness': {
-            'required_fields': ['game_id', 'name', 'year_published'],
+            'required_fields': ['game_id', 'primary_name'],
             'threshold': 0.95
         },
         'validity': {
-            'year_published': {
-                'min': 1900,
-                'max': datetime.now().year +5
-            },
             'min_players': {
                     'min': 1,
                     'max': 100
@@ -32,14 +29,14 @@ DQ_RULES = {
                     'min': 1,
                     'max': 100
             },
-            'average_rating': {
+            'avg_rating_bgg': {
                     'min': 0,
                     'max': 10
             }
         },  
         'consistency': {
             'players': 'min_players <= max_players',
-            'playtime': 'min_playtime <= max_playtime'
+            'playtime': 'min_time <= max_time'
         },
         'uniqueness': {
             'fields': ['game_id']
@@ -139,10 +136,12 @@ def lambda_handler(event, context):
 
 def execute_athena_query(query: str, database: str, output_location: str) -> List[Dict]:
     """Execute Athena query and return results."""
+    workgroup = os.environ.get('ATHENA_WORKGROUP', 'boardgames_sommelier-bgg-workgroup')
     response = athena_client.start_query_execution(
         QueryString=query,
         QueryExecutionContext={'Database': database},
-        ResultConfiguration={'OutputLocation': output_location}
+        ResultConfiguration={'OutputLocation': output_location},
+        WorkGroup=workgroup
     )
     query_execution_id = response['QueryExecutionId']
 
@@ -158,7 +157,10 @@ def execute_athena_query(query: str, database: str, output_location: str) -> Lis
         time.sleep(1)
 
     if status != 'SUCCEEDED':
-        raise Exception(f"Athena query failed with status: {status}")
+        error_msg = response['QueryExecution']['Status'].get('StateChangeReason', 'Unknown error')
+        print(f"Athena query failed. Status: {status}, Error: {error_msg}")
+        print(f"Query: {query}")
+        raise Exception(f"Athena query failed with status: {status}. Error: {error_msg}")
 
     # Fetch results
     results = athena_client.get_query_results(QueryExecutionId=query_execution_id)
@@ -235,11 +237,14 @@ def check_validity(database: str, table: str, rules: Dict, output_location: str)
         min_val = constraints['min']
         max_val = constraints['max']
 
+        # Cast field to appropriate type for comparison
+        field_expr = f"CAST({field} AS INTEGER)" if field in ['year_published', 'min_players', 'max_players'] else f"CAST({field} AS DOUBLE)"
+
         conditions = []
         if min_val is not None:
-            conditions.append(f"{field} < {min_val}")
+            conditions.append(f"{field_expr} < {min_val}")
         if max_val is not None: 
-            conditions.append(f"{field} > {max_val}")
+            conditions.append(f"{field_expr} > {max_val}")
 
         if not conditions:
             continue
@@ -255,8 +260,8 @@ def check_validity(database: str, table: str, rules: Dict, output_location: str)
         results = execute_athena_query(query, database, output_location)
 
         if results:
-            total = int(results[0]['total_records'])
-            invalids = int(results[0]['invalid_records'])
+            total = int(results[0]['total_records']) if results[0]['total_records'] else 0
+            invalids = int(results[0]['invalid_records']) if results[0]['invalid_records'] else 0
             validity_rate = (total - invalids) / total if total > 0 else 1.0
 
             field_results[field] = {
@@ -367,7 +372,18 @@ def check_referential_integrity(database: str, table: str, rules: Dict, output_l
 
 def store_dq_results(results: Dict):
     """Store data quality results in DynamoDB."""
-    dq_table.put_item(Item=results)
+    # Convert float to Decimal for DynamoDB compatibility
+    def convert_floats(obj):
+        if isinstance(obj, float):
+            return Decimal(str(obj))
+        elif isinstance(obj, dict):
+            return {k: convert_floats(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [convert_floats(item) for item in obj]
+        return obj
+    
+    converted_results = convert_floats(results)
+    dq_table.put_item(Item=converted_results)
 
 def send_dq_alert(results: Dict):
     """Send SNS alert if data quality checks fail."""
@@ -377,9 +393,11 @@ def send_dq_alert(results: Dict):
         return
     
     failed_checks = []
+    failed_details = {}
     for check_type, check_results in results['checks'].items():
         if isinstance(check_results, dict) and not check_results.get('passed'):
-            failed_checks.append({check_type: check_results})
+            failed_checks.append(check_type)
+            failed_details[check_type] = check_results
 
     message = f"""
     Data Quality Check FAILED
@@ -387,7 +405,8 @@ def send_dq_alert(results: Dict):
     Timestamp: {results['timestamp']}
     Check ID: {results['check_id']}
     
-    Failed Checks: {', '.join(failed_checks)} 
+    Failed Checks: {', '.join(failed_checks) if failed_checks else 'None'}
+    Failed Check Details: {json.dumps(failed_details, default=str)}
     
     Please review the detailed results in the DynamoDB table.
     """

@@ -7,6 +7,16 @@ Write-Host "Packaging Lambda functions..."
 Write-Host "Script directory: $ScriptDir"
 Write-Host "Root directory: $RootDir"
 
+# Package game_id_discovery function (code only, requests/boto3 from layer)
+Write-Host "Packaging game_id_discovery (code only)..."
+$discoveryDir = "$RootDir/lambda_functions/game_id_discovery"
+$discoveryZip = "$RootDir/lambda_functions/lambda_game_id_discovery.zip"
+if (Test-Path $discoveryZip) {
+    Remove-Item $discoveryZip -Force -Confirm:$false
+}
+Compress-Archive -Path "$discoveryDir/game_id_discovery.py" -DestinationPath $discoveryZip -Force
+Write-Host "Created: $discoveryZip"
+
 # Package extract function (only needs requests, boto3 from layer)
 Write-Host "Packaging extract_bgg_data..."
 $extractDir = "$RootDir/lambda_functions/extract_bgg_data"

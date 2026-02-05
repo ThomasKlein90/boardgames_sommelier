@@ -6,20 +6,27 @@ from airflow.providers.amazon.aws.operators.lambda_function import LambdaInvokeF
 from airflow.providers.amazon.aws.sensors.s3 import S3KeySensor
 from airflow.providers.amazon.aws.operators.glue_crawler import GlueCrawlerOperator
 from airflow.operators.python import PythonOperator
+from airflow.operators.bash import BashOperator
+from botocore.config import Config
 from datetime import datetime, timedelta
 import json
 import os
+import boto3
 
 # Get region from environment or use default
 REGION = os.environ.get('AWS_REGION', 'ap-southeast-2')
 
 # Get Airflow Variables (fetched at DAG parse time)
 GLUE_CRAWLER_ROLE_ARN = Variable.get('glue_crawler_role_arn', default_var='arn:aws:iam::021406833830:role/boardgames_sommelier-glue-crawler-role')
+BRONZE_BUCKET = Variable.get('bronze_bucket_name', default_var='boardgames-sommelier-bronze-dev-021406833830')
 SILVER_BUCKET = Variable.get('silver_bucket_name', default_var='boardgames-sommelier-silver-dev-021406833830')
 GOLD_BUCKET = Variable.get('gold_bucket_name', default_var='boardgames-sommelier-gold-dev-021406833830')
 SILVER_CRAWLER_NAME = Variable.get('silver_crawler_name', default_var='bgg-pipeline-silver-dimensions-crawler')
 GOLD_CRAWLER_NAME = Variable.get('gold_crawler_name', default_var='bgg-pipeline-gold-fact-crawler')
 GLUE_DATABASE_NAME = Variable.get('glue_database_name', default_var='boardgames_sommelier_bgg_database')
+GAME_ID_DISCOVERY_LAMBDA = Variable.get('game_id_discovery_lambda_name', default_var='boardgames_sommelier-game-id-discovery-dev')
+APPLY_MAPPINGS_LAMBDA = Variable.get('apply_mappings_lambda_name', default_var='boardgames_sommelier_apply_mappings')
+DATA_QUALITY_LAMBDA = Variable.get('data_quality_lambda_name', default_var='boardgames_sommelier-data-quality-dev')
 
 # Default arguments
 default_args = {
@@ -28,8 +35,10 @@ default_args = {
     'start_date': datetime(2026,1,1),
     'email_on_failure': False,
     'email_on_retry': False,
-    'retries':2,
-    'retry_delay': timedelta(minutes=5)
+    'retries': 5,
+    'retry_delay': timedelta(minutes=2),
+    'retry_exponential_backoff': True,
+    'max_retry_delay': timedelta(minutes=15)
 }
 
 # Create DAG
@@ -42,49 +51,50 @@ dag = DAG(
     tags=['bgg','boardgames','etl']
 )
 
-def generate_game_ids(**context):
-    """
-    Generate list of game IDs to process
-    In production, this would query BGG or use a more sophisticated method
-    """
-    # For demo: process games 1-100
-    # In production: query BGG rankings, use incremental loading,etc.
-    execution_date = context['execution_date']
-
-    # Example: process 50 games per day
-    start_id = 1
-    end_id = 50
-
-    game_ids = list(range(start_id, end_id+1))
-
-    return {
-        'game_ids': game_ids,
-        'batch_name': f"batch_{execution_date.strftime('%Y%m%d')}"
+# Botocore config to handle Lambda throttling with adaptive retries
+lambda_botocore_config = Config(
+    retries={
+        'max_attempts': 10,
+        'mode': 'adaptive'
     }
-
-# Task 1: Generate game IDs to process
-generate_ids_task = PythonOperator(
-    task_id='generate_game_ids',
-    python_callable=generate_game_ids,
-    dag=dag
 )
 
-# Task 2: Extract data from BGG API (Bronze layer)
-extract_task = LambdaInvokeFunctionOperator(
-    task_id='extract_bgg_data',
-    function_name='boardgames_sommelier_extract_bgg_data',
-    payload='{{ task_instance.xcom_pull(task_ids="generate_game_ids") | tojson }}',
-    invocation_type='Event',  # fire-and-forget; downstream S3 sensor waits for output
+def get_latest_discovered_ids_key(**context):
+    """
+    Find the latest discovered game IDs file in S3.
+    """
+    s3_client = boto3.client('s3', region_name=REGION)
+    response = s3_client.list_objects_v2(
+        Bucket=BRONZE_BUCKET,
+        Prefix='game_ids/discovered_'
+    )
+
+    contents = response.get('Contents', [])
+    if not contents:
+        raise ValueError('No discovered game IDs file found in S3.')
+
+    latest = max(contents, key=lambda obj: obj['LastModified'])
+    return {
+        'bucket': BRONZE_BUCKET,
+        's3_key': latest['Key']
+    }
+
+# Task 1: Discover game IDs (Lambda)
+game_id_discovery_task = LambdaInvokeFunctionOperator(
+    task_id='game_id_discovery',
+    function_name=GAME_ID_DISCOVERY_LAMBDA,
+    payload=json.dumps({}),
+    invocation_type='Event',
     region_name=REGION,
     execution_timeout=timedelta(minutes=30),
     dag=dag
 )
 
-# Task 3: Wait for bronze file
-wait_for_bronze = S3KeySensor(
-    task_id='wait_for_bronze_file',
+# Task 2: Wait for discovery output file in bronze bucket
+wait_for_game_id_file = S3KeySensor(
+    task_id='wait_for_game_id_file',
     bucket_name='{{ var.value.bronze_bucket_name }}',
-    bucket_key='bgg/raw_games/extraction_date={{ ds }}/*.json',
+    bucket_key='game_ids/discovered_*.json',
     wildcard_match=True,
     aws_conn_id='aws_default',
     timeout=600,
@@ -92,7 +102,37 @@ wait_for_bronze = S3KeySensor(
     dag=dag
 )
 
-# Task 4: Clean data (Silver layer) - triggered automatically by S3 event
+# Task 3: Get latest discovered file key
+get_latest_game_id_file = PythonOperator(
+    task_id='get_latest_game_id_file',
+    python_callable=get_latest_discovered_ids_key,
+    dag=dag
+)
+
+# Task 4: Extract data from BGG API (Bronze layer)
+extract_task = LambdaInvokeFunctionOperator(
+    task_id='extract_bgg_data',
+    function_name='boardgames_sommelier_extract_bgg_data',
+    payload='{{ task_instance.xcom_pull(task_ids="get_latest_game_id_file") | tojson }}',
+    invocation_type='Event',  # fire-and-forget; downstream S3 sensor waits for output
+    region_name=REGION,
+    execution_timeout=timedelta(minutes=30),
+    dag=dag
+)
+
+# Task 5: Wait for bronze file
+wait_for_bronze = S3KeySensor(
+    task_id='wait_for_bronze_file',
+    bucket_name='{{ var.value.bronze_bucket_name }}',
+    bucket_key='bgg/raw_games/year=*/date=*/game_*.json',
+    wildcard_match=True,
+    aws_conn_id='aws_default',
+    timeout=1200,  # Increased to 20 minutes to account for Lambda runtime + DynamoDB checks
+    poke_interval=30,
+    dag=dag
+)
+
+# Task 6: Clean data (Silver layer) - triggered automatically by S3 event
 # We just need to wait for it
 wait_for_silver = S3KeySensor(
     task_id='wait_for_silver_file',
@@ -105,7 +145,21 @@ wait_for_silver = S3KeySensor(
     dag=dag
 )
 
-# Task 5: Transform data (Gold layer) - triggered automatically by S3 even
+# Task 7: Apply mappings (Gold enrichment) - new Lambda
+apply_mappings_task = LambdaInvokeFunctionOperator(
+    task_id='apply_mappings',
+    function_name=APPLY_MAPPINGS_LAMBDA,
+    payload=json.dumps({}),
+    invocation_type='RequestResponse',
+    botocore_config=lambda_botocore_config,
+    retries=5,
+    retry_delay=timedelta(minutes=5),
+    region_name=REGION,
+    execution_timeout=timedelta(minutes=30),
+    dag=dag
+)
+
+# Task 8: Transform data (Gold layer) - triggered automatically by S3 even
 # We just need to wait for it
 wait_for_gold = S3KeySensor(
     task_id='wait_for_gold_file',
@@ -118,7 +172,14 @@ wait_for_gold = S3KeySensor(
     dag=dag
 )
 
-# Task 6: Run Glue Crawler for Silver layer
+# Task 9: Run dbt transformations (Gold layer)
+dbt_run = BashOperator(
+    task_id='dbt_run',
+    bash_command='cd /opt/airflow/bgg_analytics && /home/airflow/.local/bin/dbt run --profiles-dir /home/airflow/.dbt',
+    dag=dag
+)
+
+# Task 10: Run Glue Crawler for Silver layer
 crawl_silver = GlueCrawlerOperator(
     task_id='crawl_silver_layer',
     config={
@@ -133,7 +194,7 @@ crawl_silver = GlueCrawlerOperator(
     dag=dag
 )
 
-# Task 7: Run Glue Crawler for Gold layer
+# Task 11: Run Glue Crawler for Gold layer
 crawl_gold = GlueCrawlerOperator(
     task_id='crawl_gold_layer',
     config={
@@ -148,7 +209,18 @@ crawl_gold = GlueCrawlerOperator(
     dag=dag
 )
 
+# Task 12: Data quality checks
+data_quality_task = LambdaInvokeFunctionOperator(
+    task_id='data_quality',
+    function_name=DATA_QUALITY_LAMBDA,
+    payload=json.dumps({'table_name': 'dim_game'}),
+    invocation_type='RequestResponse',
+    region_name=REGION,
+    execution_timeout=timedelta(minutes=30),
+    dag=dag
+)
+
 # Define task dependencies
-generate_ids_task >> extract_task >> wait_for_bronze >> wait_for_silver >> wait_for_gold
+game_id_discovery_task >> wait_for_game_id_file >> get_latest_game_id_file >> extract_task >> wait_for_bronze >> wait_for_silver >> apply_mappings_task >> wait_for_gold >> dbt_run
 wait_for_silver >> crawl_silver
-wait_for_gold >> crawl_gold
+dbt_run >> crawl_gold >> data_quality_task

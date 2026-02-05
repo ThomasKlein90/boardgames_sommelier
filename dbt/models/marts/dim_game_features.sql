@@ -13,8 +13,7 @@ WITH game_base AS (
 game_categories AS (
     SELECT
         game_id,
-        ARRAY_AGG(grouped_category) AS categories,
-        COUNT(DISTINCT grouped_category) AS category_count
+        COUNT(DISTINCT category_id) AS category_count
     FROM {{ source('raw','br_game_category') }}
     GROUP BY game_id
 ),
@@ -22,22 +21,20 @@ game_categories AS (
 game_mechanics AS (
     SELECT
         game_id,
-        ARRAY_AGG(grouped_mechanic) AS mechanics,
-        COUNT(DISTINCT grouped_mechanic) AS mechanic_count
+        COUNT(DISTINCT mechanic_id) AS mechanic_count
     FROM {{ source('raw','br_game_mechanic') }}
     GROUP BY game_id
-)
+),
 
 game_themes AS (
     SELECT
         game_id,
-        ARRAY_AGG(grouped_theme) AS themes,
-        COUNT(DISTINCT grouped_theme) AS theme_count
+        COUNT(DISTINCT theme_id) AS theme_count
     FROM {{ source('raw','br_game_theme') }}
     GROUP BY game_id
 )
 
-    },
+SELECT
     g.game_id,
     g.name,
     g.year_published,
@@ -55,11 +52,8 @@ game_themes AS (
     g.popularity_wishlisted,
 
     -- Features for ML
-    COALESCE(c.categories, ARRAY[]) AS categories,
     COALESCE(c.category_count, 0) AS category_count,
-    COALESCE(m.mechanics, ARRAY[]) AS mechanics,
     COALESCE(m.mechanic_count, 0) AS mechanic_count,
-    COALESCE(t.themes, ARRAY[]) AS themes,
     COALESCE(t.theme_count, 0) AS theme_count,
 
     -- Player count flexibility

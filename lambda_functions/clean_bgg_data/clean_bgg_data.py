@@ -10,6 +10,7 @@ import logging
 from typing import Dict, List, Any
 import io
 import os
+import uuid
 from urllib.parse import unquote_plus
 
 # Configure logging
@@ -63,16 +64,25 @@ def validate_and_clean_game_data(raw_games: List[Dict[str, Any]]) -> pd.DataFram
 
     for game in raw_games:
         try:
+            # Use bgg_game_id if present, otherwise fall back to game_id from bronze
+            source_id = game.get('bgg_game_id') or game.get('game_id')
+            if source_id is None:
+                logger.warning("Missing bgg_game_id/game_id in raw game payload")
             # Generate game_id_sk (surrogate key)
-            game_id_sk = f"bggg_{game.get('bgg_game_id',0)}"
+            game_id_sk = f"bggg_{source_id or 0}"
 
-            # Check if cooperative (simple heurisitic: check if cooperative in mechanics) <-- wrong, update code to bronze layer too
+            # Check if cooperative (simple heuristic: check if cooperative in mechanics)
             mechanics = game.get('mechanics',[])
-            is_cooperative = any('cooperative' in m.get('name','').lower() for m in mechanics)
+            is_cooperative = any(
+                'cooperative' in (m.get('name','') if isinstance(m, dict) else str(m)).lower()
+                for m in mechanics
+            )
+
+            stats = game.get('statistics', {}) if isinstance(game.get('statistics', {}), dict) else {}
 
             cleaned_game = {
                 'game_id': game_id_sk,
-                'bgg_game_id': game.get('bgg_game_id'),
+                'bgg_game_id': source_id,
                 'year': game.get('year_published'),    
                 'weight': game.get('average_weight'),
                 'min_players': game.get('min_players'),
@@ -84,11 +94,11 @@ def validate_and_clean_game_data(raw_games: List[Dict[str, Any]]) -> pd.DataFram
                 'max_time': game.get('max_playtime'),
                 'cooperative': is_cooperative,                          # to update
                 'rank_bgg': game.get('rank_boardgame'),
-                'num_votes_bgg': game.get('users_rated'),
-                'avg_rating_bgg': game.get('average_rating'),
-                'stddev_rating_bgg': game.get('stddev'),
-                'bayes_rating_bgg': game.get('bayes_average'),
-                'complexity_bgg': game.get('average_weight'),
+                'num_votes_bgg': stats.get('users_rated'),
+                'avg_rating_bgg': stats.get('average_rating'),
+                'stddev_rating_bgg': stats.get('stddev'),
+                'bayes_rating_bgg': stats.get('bayes_average_rating'),
+                'complexity_bgg': stats.get('average_weight'),
                 'reddit_game_id': None,
                 'bgstats_game_id': None,
                 'bga_game_id': None,
@@ -123,9 +133,15 @@ def validate_and_clean_game_data(raw_games: List[Dict[str, Any]]) -> pd.DataFram
             except Exception as e:
                 logger.warning(f"Error converting column {col} to {dtype}: {str(e)}")
 
+    # Normalize zero min/max players to 1
+    if 'min_players' in df.columns:
+        df['min_players'] = df['min_players'].where(df['min_players'] != 0, 1)
+    if 'max_players' in df.columns:
+        df['max_players'] = df['max_players'].where(df['max_players'] != 0, 1)
+
     return df
 
-def extract_dimension_data(raw_games: List[Dict[str, Any]], dimension: str) -> pd.DataFrame:
+def extract_dimension_data(raw_games: List[Dict[str, Any]], dimension: str, id_column: str, name_column: str, description_column: str, grouped_column: str = None) -> pd.DataFrame:
     """
     Extract dimension table data (category, mechanic, theme, publisher, artist)
     
@@ -139,24 +155,34 @@ def extract_dimension_data(raw_games: List[Dict[str, Any]], dimension: str) -> p
 
     dimension_data = []
 
+    next_id = 1
+
     for game in raw_games:
         items = game.get(dimension, [])
 
         for item in items:
+            if isinstance(item, dict):
+                item_id = item.get('id')
+                item_name = item.get('name', '')
+            else:
+                item_id = next_id
+                item_name = str(item)
+                next_id += 1
+
             dimension_data.append({
-                f'{dimension[:-1]}_id': item.get('id'),
-                f'{dimension[:-1]}_name': item.get('name','')
+                id_column: item_id,
+                name_column: item_name
             })
     
     # Remove duplicates
-    df = pd.DataFrame(dimension_data).drop_duplicates(subset=[f'{dimension[:-1]}_id'])
+    df = pd.DataFrame(dimension_data).drop_duplicates(subset=[id_column])
 
-    # Add description of column (empty for now)
-    df[f'{dimension[:-1]}_description'] = ''
+    # Add description column (empty for now)
+    df[description_column] = ''
 
-    # For categories and mechanics, we might want to add group names
-    if dimension in ['categories', 'mechanics']:
-        df[f'grouped_{dimension[:-1]}_name'] = df[f'{dimension[:-1]}_id']
+    # For categories and mechanics, add grouped column
+    if grouped_column:
+        df[grouped_column] = df[id_column]
 
     return df
 
@@ -178,7 +204,10 @@ def lambda_handler(event, context):
 
             # Read raw data from bronze
             response = s3_client.get_object(Bucket=bucket, Key=key)
-            raw_games = json.loads(response['Body'].read().decode('utf-8'))
+            raw_game = json.loads(response['Body'].read().decode('utf-8'))
+
+            # Convert single game dict to list for validation function
+            raw_games = [raw_game] if isinstance(raw_game, dict) else raw_game
 
             logger.info(f"Loaded {len(raw_games)} raw games")
 
@@ -202,26 +231,44 @@ def lambda_handler(event, context):
                 pq.write_table(table, parquet_buffer, compression='snappy')
                 parquet_buffer.seek(0)
 
+                # Validate parquet buffer before upload
+                try:
+                    pq.ParquetFile(parquet_buffer)
+                except Exception as e:
+                    logger.error(f"Invalid parquet buffer for {s3_key}: {str(e)}")
+                    continue
+                finally:
+                    parquet_buffer.seek(0)
+
+                # Atomic write: upload to temp key in separate prefix then copy to final key
+                temp_key = f"bgg/_tmp/{uuid.uuid4()}-data.parquet"
                 s3_client.put_object(
                     Bucket=silver_bucket,
-                    Key=s3_key,
+                    Key=temp_key,
                     Body=parquet_buffer.getvalue(),
                     ContentType='application/parquet'
                 )
+                s3_client.copy_object(
+                    Bucket=silver_bucket,
+                    CopySource={'Bucket': silver_bucket, 'Key': temp_key},
+                    Key=s3_key,
+                    ContentType='application/parquet'
+                )
+                s3_client.delete_object(Bucket=silver_bucket, Key=temp_key)
 
                 logger.info(f"Wrote {len(year_df)} games to {s3_key}")
 
             # Extract and save dimension tables (no partitioning)
             dimensions = {
-                'categories': 'dim_category',
-                'mechanics': 'dim_mechanic',
-                'themes': 'dim_theme',
-                'publishers': 'dim_publisher',
-                'artists': 'dim_artist'
+                'categories': ('dim_category', 'category_id', 'category_name', 'category_description', 'grouped_category_name'),
+                'mechanics': ('dim_mechanic', 'mechanic_id', 'mechanic_name', 'mechanic_description', 'grouped_mechanic_name'),
+                'families': ('dim_theme', 'theme_id', 'theme_name', 'theme_description', None),
+                'publishers': ('dim_publisher', 'publisher_id', 'publisher_name', 'publisher_description', None),
+                'artists': ('dim_artist', 'artist_id', 'artist_name', 'artist_description', None)
             }
 
-            for dim_source, dim_table in dimensions.items():
-                df_dim = extract_dimension_data(raw_games, dim_source)
+            for dim_source, (dim_table, id_column, name_column, description_column, grouped_column) in dimensions.items():
+                df_dim = extract_dimension_data(raw_games, dim_source, id_column, name_column, description_column, grouped_column)
 
                 if len(df_dim) > 0:
                     # Reset index and convert to Parquet
@@ -236,12 +283,30 @@ def lambda_handler(event, context):
                     pq.write_table(table, parquet_buffer, compression='snappy')
                     parquet_buffer.seek(0)
 
+                    # Validate parquet buffer before upload
+                    try:
+                        pq.ParquetFile(parquet_buffer)
+                    except Exception as e:
+                        logger.error(f"Invalid parquet buffer for {s3_key}: {str(e)}")
+                        continue
+                    finally:
+                        parquet_buffer.seek(0)
+
+                    # Atomic write: upload to temp key in separate prefix then copy to final key
+                    temp_key = f"bgg/_tmp/{uuid.uuid4()}-data.parquet"
                     s3_client.put_object(
                         Bucket=silver_bucket,
-                        Key=s3_key,
+                        Key=temp_key,
                         Body=parquet_buffer.getvalue(),
                         ContentType='application/parquet'
                     )
+                    s3_client.copy_object(
+                        Bucket=silver_bucket,
+                        CopySource={'Bucket': silver_bucket, 'Key': temp_key},
+                        Key=s3_key,
+                        ContentType='application/parquet'
+                    )
+                    s3_client.delete_object(Bucket=silver_bucket, Key=temp_key)
 
                     logger.info(f"Wrote {len(df_dim)} {dim_table} records to {s3_key}")
         

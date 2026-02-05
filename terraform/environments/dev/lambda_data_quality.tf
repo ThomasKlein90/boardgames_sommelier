@@ -19,6 +19,7 @@ resource "aws_lambda_function" "data_quality" {
         GLUE_DATABASE = aws_glue_catalog_database.bgg.name
         DQ_METRICS_TABLE = aws_dynamodb_table.data_quality_metrics.name
         ATHENA_OUTPUT_LOCATION = "s3://${aws_s3_bucket.athena_results.id}/"
+        ATHENA_WORKGROUP = aws_athena_workgroup.bgg.name
         SNS_TOPIC_ARN = aws_sns_topic.dq_alerts.arn
       }
     }

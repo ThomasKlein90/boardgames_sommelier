@@ -56,27 +56,9 @@ def parse_input_event(event: Dict) -> List[str]:
     return []
 
 def should_skip_game(game_id: str) -> bool:
-    """Check if game should be skipped (recently processed)"""
-    try:
-        response = state_table.query(
-            KeyConditionExpression='game_id = :gid',
-            ExpressionAttributeValues={':gid': str(game_id)},
-            ScanIndexForward=False,
-            Limit=1
-            )
-
-        items = response.get('Items', {})
-        if items:
-            last_item = items[0]
-            # Skip if processed in last 24 hours and status is COMPLETED
-            if last_item.get('processing_status') == 'COMPLETED':
-                last_updated = datetime.fromisoformat(last_item['last_updated'])
-                hours_since = (datetime.utcnow() - last_updated).total_seconds() / 3600
-                return hours_since < 24
-        return False
-    
-    except:
-        return False
+    """Check if game should be skipped (DISABLED for testing - DynamoDB queries too slow)"""
+    # TODO: Re-enable after optimizing with batch queries or caching
+    return False
     
 def update_game_state(game_id: str, status: str, game_data: Optional[Dict] = None, error: Optional[str] = None):
     """Update game processing state in DynamoDB"""
@@ -298,17 +280,23 @@ def lambda_handler(event, context):
 
     for game_id in game_ids:
         try:
-            # Check if game needs processing
-            if should_skip_game(game_id):
-                logger.info(f"Skipping game {game_id} as it was recently processed.")
+            # Skip if we've already processed this game in this invocation
+            if game_id in [r.get('game_id') for r in results.get('processed_ids', [])]:
+                logger.info(f"Game {game_id} already processed in this invocation, skipping")
                 results['skipped'] += 1
                 continue
 
             # Update state as IN_PROGRESS
             update_game_state(game_id, 'IN_PROGRESS')
 
+            # Rate limiting: Wait before making API call to respect BGG rate limits
+            # This ensures we don't burst after skipping multiple games
+            time.sleep(3)
+
             # Fetch game data
             game_data = fetch_game_data(game_id, bearer_token)
+            
+            logger.info(f"Successfully fetched game {game_id}")
 
             if game_data:
                 # Store raw data in S3
@@ -318,6 +306,9 @@ def lambda_handler(event, context):
                 update_game_state(game_id, 'COMPLETED', game_data=game_data)
 
                 results['processed'] += 1
+                if 'processed_ids' not in results:
+                    results['processed_ids'] = []
+                results['processed_ids'].append({'game_id': game_id})
             else:
                 # Update state as FAILED
                 update_game_state(game_id, 'FAILED', error='Failed to fetch or parse game data.')
