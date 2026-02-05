@@ -74,38 +74,67 @@ def create_bridge_tables(silver_bucket: str, raw_games_bronze: List[Dict]) -> Di
 
     # Read dim_game to get game_id mappings
     df_game = read_parquet_from_s3(silver_bucket, 'bgg/dim_game/')
+    if df_game.empty:
+        logger.warning("No dim_game data found in silver; bridge tables will be empty.")
+        return bridge_tables
     game_id_map = dict(zip(df_game['bgg_game_id'], df_game['game_id']))
 
     # Create bridge tables for each dimension
     bridges = {
-        'categories': ('category_id', 'br_game_category'),
-        'mechanics': ('mechanic_id', 'br_game_mechanic'),
-        'themes': ('theme_id', 'br_game_theme'),
-        'publishers': ('publisher_id', 'br_game_publisher'),
-        'artists': ('artist_id', 'br_game_artist')
+        'categories': ('category_id', 'category_name', 'br_game_category'),
+        'mechanics': ('mechanic_id', 'mechanic_name', 'br_game_mechanic'),
+        'families': ('theme_id', 'theme_name', 'br_game_theme'),
+        'publishers': ('publisher_id', 'publisher_name', 'br_game_publisher'),
+        'artists': ('artist_id', 'artist_name', 'br_game_artist')
     }
 
-    for source_field, (id_field, table_name) in bridges.items():
+    for source_field, (id_field, name_field, table_name) in bridges.items():
         bridge_data = []
+        # Track unique dimension values to assign IDs
+        dim_values = set()
 
         for game in raw_games_bronze:
-            bgg_game_id = game.get('bgg_game_id')
+            bgg_game_id = game.get('bgg_game_id') or game.get('game_id')
+            # Convert to int if it's a string
+            if isinstance(bgg_game_id, str):
+                try:
+                    bgg_game_id = int(bgg_game_id)
+                except (ValueError, TypeError):
+                    continue
+            
             game_id_sk = game_id_map.get(bgg_game_id)
 
             if not game_id_sk:
                 continue
 
             items = game.get(source_field, [])
+            if not isinstance(items, list):
+                continue
+
             for item in items:
-                bridge_data.append({
-                    'game_id':game_id_sk,
-                    id_field: item.get('id')
-                })
+                # Items are strings (e.g., "Abstract Strategy", "Dice Rolling")
+                if isinstance(item, str) and item.strip():
+                    item_name = item.strip()
+                    dim_values.add(item_name)
+                    bridge_data.append({
+                        'game_id': game_id_sk,
+                        name_field: item_name
+                    })
 
         if bridge_data:
+            # Create dimension ID mapping (assign sequential IDs)
+            dim_id_map = {name: idx + 1 for idx, name in enumerate(sorted(dim_values))}
+            
+            # Add IDs to bridge data
+            for record in bridge_data:
+                record[id_field] = dim_id_map[record[name_field]]
+            
             df_bridge = pd.DataFrame(bridge_data).drop_duplicates()
+            # Keep only game_id and id_field for bridge table
+            df_bridge = df_bridge[['game_id', id_field]]
+            
             bridge_tables[table_name] = df_bridge
-            logger.info(f"Create {table_name} with {len(df_bridge)} records")
+            logger.info(f"Created {table_name} with {len(df_bridge)} records from {len(dim_values)} unique {source_field}")
 
     return bridge_tables
 
@@ -127,7 +156,14 @@ def create_fact_user_rating(raw_games_bronze: List[Dict], game_id_map: Dict[int,
     fact_data = []
 
     for game in raw_games_bronze:
-        bgg_game_id = game.get('bgg_game_id')
+        bgg_game_id = game.get('bgg_game_id') or game.get('game_id')
+        # Convert to int if it's a string
+        if isinstance(bgg_game_id, str):
+            try:
+                bgg_game_id = int(bgg_game_id)
+            except (ValueError, TypeError):
+                continue
+        
         game_id_sk = game_id_map.get(bgg_game_id)
 
         if not game_id_sk:
@@ -159,37 +195,63 @@ def lambda_handler(event, context):
         # In production you'd want better better coordination
 
         logger.info("Starting gold layer transformation")
+        logger.info(f"Gold bucket: {gold_bucket}")
 
         # Read dim_game
         df_game = read_parquet_from_s3(silver_bucket, 'bgg/dim_game/')
+        logger.info(f"Loaded dim_game rows: {len(df_game)}")
+        if df_game.empty:
+            logger.warning("No dim_game data found in silver. Exiting gold transform.")
+            return {
+                'statusCode': 204,
+                'body': json.dumps('No dim_game data found. Skipping gold layer transformation.')
+            }
         game_id_map = dict(zip(df_game['bgg_game_id'], df_game['game_id']))
 
         # For bridge tables, we need the raw data
         # This is a simplified approach - in production, store relationships separately
         bronze_bucket = os.environ['BRONZE_BUCKET']
 
-        # List recent bronze files
-        response = s3_client.list_objects_v2(
-            Bucket=bronze_bucket,
-            Prefix='bgg/raw_games/',
-            MaxKeys=10
-        )
-
+        # Load today's bronze files (multiple games)
+        today = datetime.utcnow().strftime('%Y%m%d')
         raw_games = []
-        if 'Contents' in response:
-            # Get most recent file
-            latest_file = sorted(response['Contents'],
-                                 key=lambda x: x['LastModified'],
-                                 reverse=True)[0]
-            
-            obj_response = s3_client.get_object(
-                Bucket=bronze_bucket,
-                Key=latest_file['Key']
-            )
-            raw_games = json.loads(obj_response['Body'].read().decode('utf-8'))
+        paginator = s3_client.get_paginator('list_objects_v2')
+        pages = paginator.paginate(Bucket=bronze_bucket, Prefix='bgg/raw_games/')
+
+        loaded_files = 0
+        for page in pages:
+            if 'Contents' not in page:
+                continue
+
+            for obj in page['Contents']:
+                key = obj['Key']
+                if f"date={today}" not in key:
+                    continue
+
+                obj_response = s3_client.get_object(
+                    Bucket=bronze_bucket,
+                    Key=key
+                )
+                raw_game = json.loads(obj_response['Body'].read().decode('utf-8'))
+                if isinstance(raw_game, dict):
+                    raw_games.append(raw_game)
+                elif isinstance(raw_game, list):
+                    raw_games.extend(raw_game)
+
+                loaded_files += 1
+
+        logger.info(f"Loaded {len(raw_games)} raw games from {loaded_files} bronze files for date={today}")
+        if not raw_games:
+            logger.warning("No bronze games found for today. Exiting gold transform.")
+            return {
+                'statusCode': 204,
+                'body': json.dumps('No bronze games found for today. Skipping gold layer transformation.')
+            }
 
         # Create bridge tables
         bridge_tables = create_bridge_tables(silver_bucket, raw_games)
+        if not bridge_tables:
+            logger.warning("No bridge tables created. Check raw game data and dim_game mappings.")
 
         # Save bridge tables to gold layer (partitioned by year)
         for table_name, df_bridge in bridge_tables.items():
@@ -227,8 +289,10 @@ def lambda_handler(event, context):
 
                 logger.info(f"Wrote {len(year_df)} records to {s3_key}")
 
+
         # Create fact_user_rating
         df_fact = create_fact_user_rating(raw_games, game_id_map)
+        logger.info(f"Fact user rating rows: {len(df_fact)}")
 
         if len(df_fact) > 0:
             # Partition by extraction_date

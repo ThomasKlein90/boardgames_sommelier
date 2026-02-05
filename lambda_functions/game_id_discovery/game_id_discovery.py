@@ -11,6 +11,9 @@ dynamodb = boto3.resource('dynamodb')
 secrets_client = boto3.client('secretsmanager')
 state_table = dynamodb.Table(os.environ['STATE_TABLE_NAME'])
 
+STATE_PARTITION_KEY = '__STATE__'
+LAST_SCANNED_SORT_KEY = 'LAST_SCANNED_ID'
+
 def get_bearer_token():
     """Retrieve BGG bearer token from AWS Secrets Manager using env var name"""
     secret_name = os.environ.get('BGG_SECRET_NAME')
@@ -31,29 +34,49 @@ def lambda_handler(event, context):
 
     Strategies:
     1. Check BGG's "hot" games list for new popular games.
-    2. Scan IDS ranges incrementally.
-    3. Check for games updated in last N days.
+    2. Scan IDs ranges incrementally for unseen games.
+    3. Refresh games last updated beyond a cutoff.
     """
     bucket_name = os.environ['RAW_BUCKET_NAME']
     bearer_token = get_bearer_token()
 
-    discovered_games = set()
+    scan_range_size = int(os.environ.get('SCAN_RANGE_SIZE', '1000'))
+    refresh_days = int(os.environ.get('REFRESH_DAYS', '30'))
+    refresh_limit = int(os.environ.get('REFRESH_LIMIT', '100'))
+    hot_limit = int(os.environ.get('HOT_LIMIT', '50'))
+    new_ids_limit = int(os.environ.get('NEW_IDS_LIMIT', '1000'))
+
+    discovered_new_games = set()
 
     # Strategy 1: Check BGG's "hot" games list
-    hot_games = get_hot_games(bearer_token)
-    discovered_games.update(hot_games)
+    hot_games = list(get_hot_games(bearer_token))
+    hot_games = hot_games[:hot_limit]
+    discovered_new_games.update(hot_games)
 
     # Strategy 2: Scan ID ranges incrementally
     last_scanned_id = get_last_scanned_id()
-    new_games = scan_id_range(bearer_token, last_scanned_id, last_scanned_id + 1000)
-    discovered_games.update(new_games)
+    new_games = scan_id_range(bearer_token, last_scanned_id, last_scanned_id + scan_range_size)
+    discovered_new_games.update(new_games)
 
-    # Strategy 3: Check for games updated in last N days
-    games_to_refresh = get_games_needing_refresh()
-    discovered_games.update(games_to_refresh)
+    # Strategy 3: Refresh games beyond cutoff
+    cutoff_date = datetime.utcnow() - timedelta(days=refresh_days)
+    recent_games = get_recently_processed_games(cutoff_date)
+    games_to_refresh = get_games_needing_refresh(cutoff_date, refresh_limit)
+
+    # Avoid reprocessing recently completed games
+    discovered_new_games = discovered_new_games - recent_games
+
+    # Avoid duplicates between new and refresh
+    discovered_new_games = discovered_new_games - games_to_refresh
+
+    # Cap new discovery batch size
+    if len(discovered_new_games) > new_ids_limit:
+        discovered_new_games = set(list(discovered_new_games)[:new_ids_limit])
+
+    # Final list combines new discovery + stale refresh
+    discovered_games = list(discovered_new_games.union(games_to_refresh))
 
     # Store discovered game IDs for processing
-    game_list = list(discovered_games)
     timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
 
     s3_client.put_object(
@@ -61,12 +84,19 @@ def lambda_handler(event, context):
         Key=f'game_ids/discovered_{timestamp}.json',
         Body=json.dumps({
             'timestamp': timestamp,
-            'game_ids': game_list,
-            'total_count': len(game_list),
+            'game_ids': discovered_games,
+            'total_count': len(discovered_games),
             'discovery_methods': {
                 'hot_games': len(hot_games),
                 'id_scan': len(new_games),
                 'refresh': len(games_to_refresh)
+            },
+            'limits': {
+                'scan_range_size': scan_range_size,
+                'refresh_days': refresh_days,
+                'refresh_limit': refresh_limit,
+                'hot_limit': hot_limit,
+                'new_ids_limit': new_ids_limit
             }
         }, indent=2)
     )
@@ -74,7 +104,7 @@ def lambda_handler(event, context):
     return {
         'statusCode': 200,
         'body': json.dumps({
-            'discovered_games': len(game_list),
+            'discovered_games': len(discovered_games),
             'timestamp': timestamp
         })
     }
@@ -112,8 +142,9 @@ def scan_id_range(bearer_token: str, start_id: int, end_id: int) -> Set[str]:
     valid_games = set()
 
     # Batch IDs for efficiency (BGG API supports up to 20 IDs per request)
-    for batch_start in range(start_id, end_id, 20):
-        batch_end = min(batch_start + 20, end_id)
+    batch_size = int(os.environ.get('SCAN_BATCH_SIZE', '20'))
+    for batch_start in range(start_id, end_id, batch_size):
+        batch_end = min(batch_start + batch_size, end_id)
         ids_param = ','.join(str(i) for i in range(batch_start, batch_end))
 
         try:
@@ -135,14 +166,7 @@ def scan_id_range(bearer_token: str, start_id: int, end_id: int) -> Set[str]:
         except Exception as e:
             print(f"Error scanning ID range {batch_start}-{batch_end}: {e}")
 
-    # Update last scanned ID in DynamoDB
-    state_table.put_item(
-        Item={
-            'game_id': 'LAST_SCANNED_ID',
-            'last_updated': datetime.utcnow().isoformat(),
-            'value': str(end_id)
-        }
-    )
+    set_last_scanned_id(end_id)
 
     return valid_games
 
@@ -150,15 +174,27 @@ def get_last_scanned_id() -> int:
     """Retrieve the last scanned game ID from DynamoDB"""
     try:
         response = state_table.get_item(
-            Key={'game_id': 'LAST_SCANNED_ID','last_updated': 'CURRENT'}
+            Key={'game_id': STATE_PARTITION_KEY, 'last_updated': LAST_SCANNED_SORT_KEY}
         )
         return int(response.get('Item', {}).get('value', '1'))
-    except:
+    except Exception:
         return 1
+
+def set_last_scanned_id(last_scanned_id: int) -> None:
+    """Persist last scanned game ID to DynamoDB"""
+    state_table.put_item(
+        Item={
+            'game_id': STATE_PARTITION_KEY,
+            'last_updated': LAST_SCANNED_SORT_KEY,
+            'value': str(last_scanned_id),
+            'processing_status': 'STATE'
+        }
+    )
     
-def get_games_needing_refresh() -> Set[str]:
-    """Get game IDs that need refreshing (older than 30 days)"""
-    cutoff_date = (datetime.utcnow() - timedelta(days=30)).isoformat()
+def get_games_needing_refresh(cutoff_date: datetime, limit: int) -> Set[str]:
+    """Get game IDs that need refreshing (older than cutoff)"""
+    cutoff_iso = cutoff_date.isoformat()
+    results: Dict[str, str] = {}
 
     try:
         response = state_table.query(
@@ -166,12 +202,55 @@ def get_games_needing_refresh() -> Set[str]:
             KeyConditionExpression='processing_status = :status AND last_updated < :cutoff',
             ExpressionAttributeValues={
                 ':status': 'COMPLETED',
-                ':cutoff': cutoff_date
+                ':cutoff': cutoff_iso
             },
-            Limit=100 # Limit refresh batch size
+            Limit=limit
         )
 
-        return {item['game_id'] for item in response.get('Items', [])}
+        for item in response.get('Items', []):
+            game_id = item.get('game_id')
+            last_updated = item.get('last_updated')
+            if game_id and last_updated:
+                current = results.get(game_id)
+                if current is None or last_updated > current:
+                    results[game_id] = last_updated
+
+        return set(results.keys())
     except Exception as e:
         print(f"Error querying games needing refresh: {e}")
+        return set()
+
+def get_recently_processed_games(cutoff_date: datetime) -> Set[str]:
+    """Get game IDs processed on/after cutoff to avoid reprocessing"""
+    cutoff_iso = cutoff_date.isoformat()
+    results: Dict[str, str] = {}
+
+    try:
+        paginator_key = None
+        while True:
+            response = state_table.query(
+                IndexName='StatusIndex',
+                KeyConditionExpression='processing_status = :status AND last_updated >= :cutoff',
+                ExpressionAttributeValues={
+                    ':status': 'COMPLETED',
+                    ':cutoff': cutoff_iso
+                },
+                ExclusiveStartKey=paginator_key
+            )
+
+            for item in response.get('Items', []):
+                game_id = item.get('game_id')
+                last_updated = item.get('last_updated')
+                if game_id and last_updated:
+                    current = results.get(game_id)
+                    if current is None or last_updated > current:
+                        results[game_id] = last_updated
+
+            paginator_key = response.get('LastEvaluatedKey')
+            if not paginator_key:
+                break
+
+        return set(results.keys())
+    except Exception as e:
+        print(f"Error querying recently processed games: {e}")
         return set()

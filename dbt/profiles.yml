@@ -3,7 +3,7 @@ bgg_analytics:
   outputs:
     dev:
       type: athena
-      database: boardgames_sommelier_bgg_database
+      database: AwsDataCatalog
       schema: analytics
       region_name: ap-southeast-2
       s3_staging_dir: s3://boardgames-sommelier-athena-results-dev-021406833830
@@ -13,7 +13,7 @@ bgg_analytics:
       
     prod:
       type: athena
-      database: boardgames_sommelier_bgg_database
+      database: AwsDataCatalog
       schema: analytics_prod
       region_name: ap-southeast-2
       s3_staging_dir: s3://boardgames-sommelier-athena-results-dev-021406833830

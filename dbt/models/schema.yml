@@ -2,14 +2,16 @@ version: 2
 
 sources:
   - name: raw
-    database: boardgames_sommelier_bgg_database
-    schema: default
+    database: AwsDataCatalog
+    schema: boardgames_sommelier_bgg_database
     tables:
       - name: dim_game
       - name: br_game_category
       - name: br_game_mechanic
-      - name: br_game_family
-  - name: br_game_theme
+      - name: br_game_theme
+      - name: br_game_publisher
+      - name: br_game_artist
+      - name: fct_user_rating
 
 models:
   - name: stg_games

@@ -149,26 +149,28 @@ resource "aws_lambda_permission" "allow_bronze_bucket" {
 }
 
 # S3 Event Notification to trigger transform_bgg_data Lambda
-resource "aws_s3_bucket_notification" "silver_trigger" {
-  bucket = aws_s3_bucket.silver.id
-
-  lambda_function {
-    lambda_function_arn = aws_lambda_function.transform_bgg_data.arn
-    events = ["s3:ObjectCreated:*"]
-    filter_prefix = "bgg/dim_game/"
-    filter_suffix = ".parquet"
-  }
-
-  depends_on = [ aws_lambda_permission.allow_silver_bucket ]
-}
-
-resource "aws_lambda_permission" "allow_silver_bucket" {
-  statement_id  = "AllowExecutionFromS3Bucket"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.transform_bgg_data.arn
-  principal     = "s3.amazonaws.com"
-  source_arn    = aws_s3_bucket.silver.arn
-}
+# DISABLED: Multiple parquet files (one per year) cause multiple invocations
+# Instead, we trigger transform_bgg_data manually from Airflow after all silver files are ready
+# resource "aws_s3_bucket_notification" "silver_trigger" {
+#   bucket = aws_s3_bucket.silver.id
+#
+#   lambda_function {
+#     lambda_function_arn = aws_lambda_function.transform_bgg_data.arn
+#     events = ["s3:ObjectCreated:*"]
+#     filter_prefix = "bgg/dim_game/"
+#     filter_suffix = ".parquet"
+#   }
+#
+#   depends_on = [ aws_lambda_permission.allow_silver_bucket ]
+# }
+#
+# resource "aws_lambda_permission" "allow_silver_bucket" {
+#   statement_id  = "AllowExecutionFromS3Bucket"
+#   action        = "lambda:InvokeFunction"
+#   function_name = aws_lambda_function.transform_bgg_data.arn
+#   principal     = "s3.amazonaws.com"
+#   source_arn    = aws_s3_bucket.silver.arn
+# }
 
 # Outputs
 output "extract_lambda_arn" {
