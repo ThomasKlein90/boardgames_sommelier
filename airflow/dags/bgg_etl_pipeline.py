@@ -46,7 +46,7 @@ dag = DAG(
     'bgg_etl_pipeline',
     default_args=default_args,
     description='ETL pipeline for BoardGameGeek data',
-    schedule_interval='@daily', # Run daily
+    schedule_interval='0 */8 * * *', # Run every 8 hours
     catchup=False,
     tags=['bgg','boardgames','etl']
 )
