@@ -225,7 +225,8 @@ def lambda_handler(event, context):
                 table = pa.Table.from_pandas(year_df)
 
                 # Write to S3 silver layer (partitioned by year)
-                s3_key = f"bgg/dim_game/year_published={year}/data.parquet"
+                timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+                s3_key = f"bgg/dim_game/year_published={year}/data_{timestamp}_{uuid.uuid4()}.parquet"
 
                 parquet_buffer = io.BytesIO()
                 pq.write_table(table, parquet_buffer, compression='snappy')

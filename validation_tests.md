@@ -63,24 +63,24 @@ aws athena get-query-results --query-execution-id $queryId --region ap-southeast
 
 ## 4. Verify dbt Models in Athena
 
-Check that dbt models were created in the analytics_analytics schema:
+Check that dbt models were created in the analytics schema:
 
 ```powershell
-# List tables in analytics_analytics schema
-$queryId = (aws athena start-query-execution --query-string "SHOW TABLES IN analytics_analytics" --query-execution-context Database=boardgames_sommelier_bgg_database --work-group boardgames_sommelier-bgg-workgroup --region ap-southeast-2 | ConvertFrom-Json).QueryExecutionId
+# List tables in analytics schema
+$queryId = (aws athena start-query-execution --query-string "SHOW TABLES IN analytics" --query-execution-context Database=boardgames_sommelier_bgg_database --work-group boardgames_sommelier-bgg-workgroup --region ap-southeast-2 | ConvertFrom-Json).QueryExecutionId
 Start-Sleep -Seconds 5
 aws athena get-query-results --query-execution-id $queryId --region ap-southeast-2
 ```
 
 ### Query dbt staging model
 ```powershell
-$queryId = (aws athena start-query-execution --query-string "SELECT COUNT(*) FROM analytics_analytics.stg_games" --query-execution-context Database=boardgames_sommelier_bgg_database --work-group boardgames_sommelier-bgg-workgroup --region ap-southeast-2 | ConvertFrom-Json).QueryExecutionId
+$queryId = (aws athena start-query-execution --query-string "SELECT COUNT(*) FROM analytics.stg_games" --query-execution-context Database=boardgames_sommelier_bgg_database --work-group boardgames_sommelier-bgg-workgroup --region ap-southeast-2 | ConvertFrom-Json).QueryExecutionId
 
 Start-Sleep -Seconds 5
 aws athena get-query-results --query-execution-id $queryId --region ap-southeast-2
 ```
 
-**Expected**: Should see `stg_games` and `dim_game_features` in analytics_analytics.
+**Expected**: Should see `stg_games` and `dim_game_features` in analytics.
 
 ---
 

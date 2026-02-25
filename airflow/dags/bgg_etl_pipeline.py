@@ -32,7 +32,7 @@ DATA_QUALITY_LAMBDA = Variable.get('data_quality_lambda_name', default_var='boar
 default_args = {
     'owner': 'data_team',
     'depends_on_past': False,
-    'start_date': datetime(2026,1,1),
+    'start_date': datetime(2026, 2, 26, 2, 0, 0),
     'email_on_failure': False,
     'email_on_retry': False,
     'retries': 5,
@@ -46,7 +46,8 @@ dag = DAG(
     'bgg_etl_pipeline',
     default_args=default_args,
     description='ETL pipeline for BoardGameGeek data',
-    schedule_interval='0 */8 * * *', # Run every 8 hours
+    schedule_interval=timedelta(days=3),  # Run every 3 days
+    timezone='Australia/Sydney',
     catchup=False,
     tags=['bgg','boardgames','etl']
 )
