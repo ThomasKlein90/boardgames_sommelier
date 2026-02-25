@@ -21,12 +21,12 @@ resource "aws_lambda_function" "lambda_game_id_discovery" {
       BGG_SECRET_NAME  = aws_secretsmanager_secret.bgg_token.name
       RAW_BUCKET_NAME  = aws_s3_bucket.bronze.id
       STATE_TABLE_NAME = aws_dynamodb_table.bgg_api_state.name
-      SCAN_RANGE_SIZE  = "1000"
+      SCAN_RANGE_SIZE  = "5000"
       SCAN_BATCH_SIZE  = "20"
       REFRESH_DAYS     = "30"
-      REFRESH_LIMIT    = "100"
+      REFRESH_LIMIT    = "20"
       HOT_LIMIT        = "50"
-      NEW_IDS_LIMIT    = "1000"
+      NEW_IDS_LIMIT    = "5000"
     }
   }
 
