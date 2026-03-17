@@ -104,6 +104,23 @@
         "cloudwatch:*"
       ],
       "Resource": "*"
+    },
+		{
+			"Sid": "DynamoDBPermissions",
+			"Effect": "Allow",
+			"Action": [
+				"dynamodb:*"
+			],
+			"Resource": "*"
+		},
+    {
+      "Sid": "EventBridgeSchedulerPermissions",
+      "Effect": "Allow",
+      "Action": [
+        "scheduler:*",
+        "events:*"
+      ],
+      "Resource": "*"
     }
   ]
 }

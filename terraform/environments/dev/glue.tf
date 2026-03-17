@@ -8,51 +8,60 @@ resource "aws_glue_catalog_database" "bgg" {
 
 # Glue Crawlers for Silver layer
 resource "aws_glue_crawler" "silver_dimensions" {
-  name         = "${var.project_name}_silver_dimensions_crawler"
-  database_name = aws_glue_catalog_database.bgg.name
-  role     = aws_iam_role.glue_crawler.arn
+  name           = "${var.project_name}_silver_dimensions_crawler"
+  database_name  = aws_glue_catalog_database.bgg.name
+  role           = aws_iam_role.glue_crawler.arn
+  schedule       = "cron(0 2 * * ? *)" # Daily at 2AM UTC
 
   s3_target {
     path = "s3://${aws_s3_bucket.silver.id}/bgg/dim_game/"
   }
 
   s3_target {
-    path = "s3://${aws_s3_bucket.silver.id}/bgg/dim_category"
+    path = "s3://${aws_s3_bucket.silver.id}/bgg/dim_category/"
   }
 
   s3_target {
-    path = "s3://${aws_s3_bucket.silver.id}/bgg/dim_mechanic"
+    path = "s3://${aws_s3_bucket.silver.id}/bgg/dim_mechanic/"
   }
   
   s3_target {
-    path = "s3://${aws_s3_bucket.silver.id}/bgg/dim_theme"
+    path = "s3://${aws_s3_bucket.silver.id}/bgg/dim_theme/"
   }
   
   s3_target {
-    path = "s3://${aws_s3_bucket.silver.id}/bgg/dim_publisher"
+    path = "s3://${aws_s3_bucket.silver.id}/bgg/dim_publisher/"
   }
   
   s3_target {
-    path = "s3://${aws_s3_bucket.silver.id}/bgg/dim_artist"
+    path = "s3://${aws_s3_bucket.silver.id}/bgg/dim_artist/"
+  }
+
+  schema_change_policy {
+    delete_behavior = "LOG"
+    update_behavior = "LOG"
+  }
+
+  recrawl_policy {
+    recrawl_behavior = "CRAWL_EVERYTHING"
   }
 
   configuration = jsonencode({
-    "Version" = 1.0,
+    Version = 1.0
     Grouping = {
-        "TableGroupingPolicy" = "CombineCompatibleSchemas"
+      TableGroupingPolicy = "CombineCompatibleSchemas"
     }
   })
-
-  schedule = "cron(0 2 * * ? *)" # Daily at 2AM UTC
 
   tags = var.common_tags
 }
 
 # Glue Crawlers for Gold layer
 resource "aws_glue_crawler" "gold_facts" {
-  name         = "${var.project_name}_gold_facts_crawler"
-  database_name = aws_glue_catalog_database.bgg.name
-  role     = aws_iam_role.glue_crawler.arn
+  name           = "${var.project_name}_gold_facts_crawler"
+  database_name  = aws_glue_catalog_database.bgg.name
+  role           = aws_iam_role.glue_crawler.arn
+  schedule       = "cron(0 3 * * ? *)" # Daily at 3AM UTC
 
   s3_target {
     path = "s3://${aws_s3_bucket.gold.id}/bgg/br_game_category/"
@@ -62,33 +71,39 @@ resource "aws_glue_crawler" "gold_facts" {
     path = "s3://${aws_s3_bucket.gold.id}/bgg/br_game_mechanic/"
   }
   
-    s3_target {
-        path = "s3://${aws_s3_bucket.gold.id}/bgg/br_game_theme/"
-    }
+  s3_target {
+    path = "s3://${aws_s3_bucket.gold.id}/bgg/br_game_theme/"
+  }
 
-    s3_target {
-        path = "s3://${aws_s3_bucket.gold.id}/bgg/br_game_publisher/"
-    }
+  s3_target {
+    path = "s3://${aws_s3_bucket.gold.id}/bgg/br_game_publisher/"
+  }
 
-    s3_target {
-        path = "s3://${aws_s3_bucket.gold.id}/bgg/br_game_artist/"
-    }
+  s3_target {
+    path = "s3://${aws_s3_bucket.gold.id}/bgg/br_game_artist/"
+  }
 
-    s3_target {
-      path = "s3://${aws_s3_bucket.gold.id}/bgg/fct_user_rating"
-    }
+  s3_target {
+    path = "s3://${aws_s3_bucket.gold.id}/bgg/fct_user_rating/"
+  }
+
+  schema_change_policy {
+    delete_behavior = "LOG"
+    update_behavior = "LOG"
+  }
+
+  recrawl_policy {
+    recrawl_behavior = "CRAWL_EVERYTHING"
+  }
 
   configuration = jsonencode({
-    "Version" = 1.0,
+    Version = 1.0
     Grouping = {
-        "TableGroupingPolicy" = "CombineCompatibleSchemas"
+      TableGroupingPolicy = "CombineCompatibleSchemas"
     }
   })
 
-  schedule = "cron(0 3 * * ? *)" # Daily at 3AM UTC
-
   tags = var.common_tags
-  
 }
 
 output "glue_database_name" {

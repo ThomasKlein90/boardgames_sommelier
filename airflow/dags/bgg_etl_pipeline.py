@@ -6,12 +6,13 @@ from airflow.providers.amazon.aws.operators.lambda_function import LambdaInvokeF
 from airflow.providers.amazon.aws.sensors.s3 import S3KeySensor
 from airflow.providers.amazon.aws.operators.glue_crawler import GlueCrawlerOperator
 from airflow.operators.python import PythonOperator
-from airflow.operators.bash import BashOperator
+from airflow.operators.empty import EmptyOperator
 from botocore.config import Config
 from datetime import datetime, timedelta
 import json
 import os
 import boto3
+import pendulum
 
 # Get region from environment or use default
 REGION = os.environ.get('AWS_REGION', 'ap-southeast-2')
@@ -32,7 +33,7 @@ DATA_QUALITY_LAMBDA = Variable.get('data_quality_lambda_name', default_var='boar
 default_args = {
     'owner': 'data_team',
     'depends_on_past': False,
-    'start_date': datetime(2026, 2, 26, 2, 0, 0),
+    'start_date': pendulum.datetime(2026, 2, 26, 2, 0, 0, tz='Australia/Sydney'),
     'email_on_failure': False,
     'email_on_retry': False,
     'retries': 5,
@@ -47,8 +48,8 @@ dag = DAG(
     default_args=default_args,
     description='ETL pipeline for BoardGameGeek data',
     schedule_interval=timedelta(days=3),  # Run every 3 days
-    timezone='Australia/Sydney',
     catchup=False,
+    max_active_runs=1,
     tags=['bgg','boardgames','etl']
 )
 
@@ -98,6 +99,7 @@ wait_for_game_id_file = S3KeySensor(
     bucket_key='game_ids/discovered_*.json',
     wildcard_match=True,
     aws_conn_id='aws_default',
+    mode='reschedule',
     timeout=600,
     poke_interval=30,
     dag=dag
@@ -128,6 +130,7 @@ wait_for_bronze = S3KeySensor(
     bucket_key='bgg/raw_games/year=*/date=*/game_*.json',
     wildcard_match=True,
     aws_conn_id='aws_default',
+    mode='reschedule',
     timeout=1200,  # Increased to 20 minutes to account for Lambda runtime + DynamoDB checks
     poke_interval=30,
     dag=dag
@@ -141,6 +144,7 @@ wait_for_silver = S3KeySensor(
     aws_conn_id='aws_default',
     bucket_key='bgg/dim_game/**/*.parquet',
     wildcard_match=True,
+    mode='reschedule',
     timeout=900,
     poke_interval=60,
     dag=dag
@@ -168,15 +172,16 @@ wait_for_gold = S3KeySensor(
     bucket_name='{{ var.value.gold_bucket_name }}',
     bucket_key='bgg/br_game_category/**/*.parquet',
     wildcard_match=True,
+    mode='reschedule',
     timeout=900,
     poke_interval=60,
     dag=dag
 )
 
 # Task 9: Run dbt transformations (Gold layer)
-dbt_run = BashOperator(
+# TODO: Install dbt on EC2 instance and configure proper paths
+dbt_run = EmptyOperator(
     task_id='dbt_run',
-    bash_command='cd /opt/airflow/bgg_analytics && /home/airflow/.local/bin/dbt run --profiles-dir /home/airflow/.dbt',
     dag=dag
 )
 

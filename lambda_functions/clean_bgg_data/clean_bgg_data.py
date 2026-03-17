@@ -141,6 +141,17 @@ def validate_and_clean_game_data(raw_games: List[Dict[str, Any]]) -> pd.DataFram
 
     return df
 
+def get_extraction_month(value: Any) -> str:
+    try:
+        parsed = pd.to_datetime(value, errors='coerce', utc=True)
+    except Exception:
+        parsed = pd.NaT
+
+    if pd.isna(parsed):
+        parsed = pd.Timestamp.utcnow()
+
+    return parsed.strftime('%Y-%m')
+
 def extract_dimension_data(raw_games: List[Dict[str, Any]], dimension: str, id_column: str, name_column: str, description_column: str, grouped_column: str = None) -> pd.DataFrame:
     """
     Extract dimension table data (category, mechanic, theme, publisher, artist)
@@ -214,19 +225,30 @@ def lambda_handler(event, context):
             # Clean dim_game data
             df_game = validate_and_clean_game_data(raw_games)
 
-            # Group by year for paritioning
-            for year, year_df in df_game.groupby('year'):
+            if not df_game.empty:
+                df_game['extraction_month'] = df_game['extraction_date'].apply(get_extraction_month)
+                df_game['game_id_key'] = df_game['bgg_game_id'].fillna(df_game['game_id'])
+
+            # Group by year, game, and extraction month to keep one file per game per month
+            for (year, game_id_key, extraction_month), group_df in df_game.groupby(
+                ['year', 'game_id_key', 'extraction_month']
+            ):
                 if pd.isna(year):
                     year = 0  # unknown year
                 
                 year = int(year)
 
+                write_df = group_df.drop(columns=['extraction_month', 'game_id_key'], errors='ignore')
+
                 # Convert to Parquet
-                table = pa.Table.from_pandas(year_df)
+                table = pa.Table.from_pandas(write_df)
 
                 # Write to S3 silver layer (partitioned by year)
-                timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
-                s3_key = f"bgg/dim_game/year_published={year}/data_{timestamp}_{uuid.uuid4()}.parquet"
+                safe_game_id = str(game_id_key) if game_id_key is not None else "unknown"
+                s3_key = (
+                    f"bgg/dim_game/year_published={year}/"
+                    f"data_{safe_game_id}_{extraction_month}.parquet"
+                )
 
                 parquet_buffer = io.BytesIO()
                 pq.write_table(table, parquet_buffer, compression='snappy')
@@ -257,7 +279,7 @@ def lambda_handler(event, context):
                 )
                 s3_client.delete_object(Bucket=silver_bucket, Key=temp_key)
 
-                logger.info(f"Wrote {len(year_df)} games to {s3_key}")
+                logger.info(f"Wrote {len(write_df)} games to {s3_key}")
 
             # Extract and save dimension tables (no partitioning)
             dimensions = {
