@@ -180,3 +180,15 @@ resource "aws_instance" "airflow" {
   }
 
 }
+
+# Elastic IP for Airflow EC2 instance (persists across stop/start)
+resource "aws_eip" "airflow" {
+  instance = aws_instance.airflow.id
+  domain   = "vpc"
+
+  tags = {
+    Name = "${var.project_name}-airflow-eip"
+  }
+
+  depends_on = [aws_internet_gateway.main]
+}

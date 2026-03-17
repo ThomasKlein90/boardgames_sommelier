@@ -1,0 +1,19 @@
+[Unit]
+Description=Airflow Scheduler
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/airflow
+Environment="PATH=/home/ubuntu/airflow/venv/bin"
+Environment="AIRFLOW_HOME=/home/ubuntu/airflow"
+Environment="AIRFLOW__CORE__LOAD_EXAMPLES=False"
+Environment="AIRFLOW__SCHEDULER__PARSING_PROCESSES=1"
+Environment="AIRFLOW__SCHEDULER__SCHEDULER_HEALTH_CHECK_THRESHOLD=300"
+ExecStart=/home/ubuntu/airflow/venv/bin/airflow scheduler
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
